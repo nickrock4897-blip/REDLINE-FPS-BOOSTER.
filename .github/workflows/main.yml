@@ -1,0 +1,39 @@
+name: Build REDLINE APK
+
+on:
+workflow_dispatch:
+push:
+paths:
+- 'REDLINE-FPS-BOOSTER.zip'
+- '.github/workflows/main.yml'
+
+jobs:
+build:
+runs-on: ubuntu-latest
+steps:
+- name: Download project
+uses: actions/checkout@v4
+
+  - name: Unzip Android project
+    run: |
+      unzip -o REDLINE-FPS-BOOSTER.zip -d project
+      find project -name gradlew -type f -exec chmod +x {} \;
+
+  - name: Set up Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: '17'
+
+  - name: Set up Android SDK
+    uses: android-actions/setup-android@v3
+
+  - name: Build APK
+    working-directory: project/REDLINE-FPS-BOOSTER
+    run: gradle --no-daemon :app:assembleDebug
+
+  - name: Upload APK
+    uses: actions/upload-artifact@v4
+    with:
+      name: REDLINE-FPS-BOOSTER-APK
+      path: project/REDLINE-FPS-BOOSTER/app/build/outputs/apk/debug/app-debug.apk
