@@ -1,44 +1,61 @@
 name: Build REDLINE APK
 
 on:
-  workflow_dispatch:
-  push:
-    paths:
-      - '**'
+workflow_dispatch:
+push:
+paths:
+- '**'
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+build:
+runs-on: ubuntu-latest
 
-      - name: List files
-        run: find . -maxdepth 4 -type f | sort
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+  - name: List repository files
+    run: |
+      echo "Repository contents:"
+      find . -maxdepth 4 -type f | sort
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+  - name: Set up Java
+    uses: actions/setup-java@v5
+    with:
+      distribution: temurin
+      java-version: '17'
 
-      - name: Find and build Android project
-        run: |
-          SETTINGS_FILE="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)"
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "Kein Android-Projekt gefunden. Die Projektdateien fehlen im Repository."
-            exit 1
-          fi
-          cd "$(dirname "$SETTINGS_FILE")"
-          gradle --no-daemon :app:assembleDebug
+  - name: Set up Android SDK
+    uses: android-actions/setup-android@v3
+    with:
+      packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Upload APK
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: REDLINE-FPS-BOOSTER-APK
-          path: '**/app/build/outputs/apk/debug/app-debug.apk'
-          if-no-files-found: error
+  - name: Find Android project
+    id: project
+    shell: bash
+    run: |
+      SETTINGS_FILE="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.gradle/*' | head -n 1)"
+
+      if [ -z "$SETTINGS_FILE" ]; then
+        echo "ERROR: No Android Gradle project found."
+        echo "The actual Android project files must be uploaded to this repository."
+        exit 1
+      fi
+
+      PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+      echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+      echo "Found Android project at: $PROJECT_DIR"
+
+  - name: Build APK
+    working-directory: .
+    run: |
+      cd "${{ steps.project.outputs.project_dir }}"
+      gradle --no-daemon :app:assembleDebug
+
+  - name: Upload APK
+    if: success()
+    uses: actions/upload-artifact@v4
+    with:
+      name: REDLINE-FPS-BOOSTER-APK
+      path: '**/app/build/outputs/apk/debug/app-debug.apk'
+      if-no-files-found: error
