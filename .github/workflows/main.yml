@@ -4,20 +4,29 @@ on:
 workflow_dispatch:
 push:
 paths:
-- 'REDLINE-FPS-BOOSTER.zip'
-- '.github/workflows/main.yml'
+- '**'
 
 jobs:
 build:
 runs-on: ubuntu-latest
 steps:
-- name: Download project
+- name: Checkout repository
 uses: actions/checkout@v4
 
-  - name: Unzip Android project
+  - name: Find project files
     run: |
-      unzip -o REDLINE-FPS-BOOSTER.zip -d project
-      find project -name gradlew -type f -exec chmod +x {} \;
+      echo "Repository files:"
+      find . -maxdepth 4 -type f | sort
+
+  - name: Extract project ZIP if present
+    run: |
+      mkdir -p project
+      ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' | head -n 1)"
+      if [ -n "$ZIP_FILE" ]; then
+        unzip -o "$ZIP_FILE" -d project
+      fi
+      echo "Android Gradle files:"
+      find . -type f \( -name settings.gradle -o -name settings.gradle.kts \)
 
   - name: Set up Java
     uses: actions/setup-java@v4
@@ -29,11 +38,20 @@ uses: actions/checkout@v4
     uses: android-actions/setup-android@v3
 
   - name: Build APK
-    working-directory: project/REDLINE-FPS-BOOSTER
-    run: gradle --no-daemon :app:assembleDebug
+    run: |
+      SETTINGS_FILE="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path '*/.gradle/*' | head -n 1)"
+      if [ -z "$SETTINGS_FILE" ]; then
+        echo "ERROR: No Android Gradle project found. Check that the project ZIP is in the repository."
+        exit 1
+      fi
+      PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+      cd "$PROJECT_DIR"
+      gradle --no-daemon :app:assembleDebug
 
   - name: Upload APK
+    if: success()
     uses: actions/upload-artifact@v4
     with:
       name: REDLINE-FPS-BOOSTER-APK
-      path: project/REDLINE-FPS-BOOSTER/app/build/outputs/apk/debug/app-debug.apk
+      path: '**/app/build/outputs/apk/debug/app-debug.apk'
+      if-no-files-found: error
