@@ -23,7 +23,6 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
-import kotlin.math.max
 
 class AfkOverlayService : Service() {
     private lateinit var windowManager: WindowManager
@@ -197,6 +196,19 @@ class AfkOverlayService : Service() {
         statusText?.text = if (SessionStore.isRunning(this)) "AFK GRIND: ON • DISPLAY: WACH" else "AFK GRIND: PAUSIERT"
         timerText?.text = SessionStore.format(SessionStore.durationMs(this))
         pauseButton?.text = if (SessionStore.isRunning(this)) "Pause" else "Weiter"
+
+        // Re-apply Android's per-window brightness while the AFK session is actively running.
+        // This does not simulate taps and cannot override system-enforced dimming, thermal limits,
+        // battery restrictions, or a manual screen lock.
+        if (SessionStore.isRunning(this)) {
+            val panel = overlay
+            val params = panel?.tag as? WindowManager.LayoutParams
+            if (panel != null && params != null) {
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                params.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL
+                runCatching { windowManager.updateViewLayout(panel, params) }
+            }
+        }
     }
 
     override fun onDestroy() {
