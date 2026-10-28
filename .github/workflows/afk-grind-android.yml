@@ -1,0 +1,56 @@
+name: Build AFK Grind Android APK
+
+on:
+  push:
+    paths:
+      - 'AFKGrind/**'
+      - '.github/workflows/afk-grind-android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build AFK Grind
+        run: gradle --no-daemon -p AFKGrind assembleDebug
+      - name: Verify APK exists and is not empty
+        id: locate-apk
+        shell: bash
+        run: |
+          apk="$(find AFKGrind -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
+          if [[ -z "$apk" || ! -s "$apk" ]]; then
+            echo "No non-empty debug APK found after assembleDebug." >&2
+            find AFKGrind -type f -path '*/build/outputs/*' -print || true
+            exit 1
+          fi
+          echo "apk_path=$apk" >> "$GITHUB_OUTPUT"
+          ls -lh "$apk"
+          sha256sum "$apk"
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AFK-Grind-debug-APK
+          path: ${{ steps.locate-apk.outputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 30
