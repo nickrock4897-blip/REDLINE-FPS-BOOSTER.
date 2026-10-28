@@ -26,6 +26,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -42,6 +44,7 @@ jobs:
           APK="app/build/outputs/apk/debug/app-debug.apk"
           test -s "$APK"
           echo "APK verified: $APK ($(stat -c%s "$APK") bytes)"
+          sha256sum "$APK"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
