@@ -297,6 +297,18 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth()
                                 ) { Text("URSPRÜNGLICHE GRAFIK WIEDERHERSTELLEN") }
                                 Text("ROBLOX STATUS: $robloxAutomationStatus", color = Muted, fontSize = 10.sp)
+                                OutlinedButton(
+                                    onClick = {
+                                        if (!SettingsAutomationService.isEnabled(this@MainActivity)) {
+                                            Toast.makeText(this@MainActivity, "Bitte REDLINE unter Bedienungshilfen aktivieren.", Toast.LENGTH_LONG).show()
+                                            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                                        } else {
+                                            SettingsAutomationService.start(this@MainActivity)
+                                            runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("SAMSUNG GERÄTEWARTUNG STARTEN") }
                             }
                         }
                     }
