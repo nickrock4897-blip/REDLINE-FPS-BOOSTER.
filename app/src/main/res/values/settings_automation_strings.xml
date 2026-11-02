@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_automation_description">REDLINE sucht nur in den Android-Anzeigeeinstellungen nach einer verfügbaren höheren Bildwiederholrate. Es werden keine anderen Apps bedient und keine Bildschirmaufnahme erstellt.</string>
+</resources>
