@@ -147,6 +147,11 @@ class MainActivity : ComponentActivity() {
         var tick by remember { mutableIntStateOf(0) }
         var performance by remember { mutableStateOf(getSharedPreferences("redline_afk_store", MODE_PRIVATE).getBoolean("performance_mode", true)) }
         var warning by remember { mutableStateOf("") }
+        var showRobloxOptimizeDialog by remember { mutableStateOf(false) }
+        var showRobloxRestoreDialog by remember { mutableStateOf(false) }
+        val hasSavedRobloxGraphics = remember(tick) { SettingsAutomationService.hasSavedRobloxGraphics(this) }
+        val robloxAutomationStatus = getSharedPreferences("redline_settings_automation", MODE_PRIVATE)
+            .getString("roblox_optimization_status", "Noch nicht gestartet") ?: "Noch nicht gestartet"
         val livePreview by LiveScreenState.preview.collectAsState()
         val liveStatus by LiveScreenState.status.collectAsState()
         val currentAction by LiveScreenState.currentAction.collectAsState()
@@ -278,6 +283,20 @@ class MainActivity : ComponentActivity() {
                                     Text("LIVE SCREEN PREVIEW: Noch kein Bildschirmbild empfangen.", color = Muted, fontSize = 11.sp)
                                 }
                                 Text("Frames und OCR bleiben lokal • neue Fenster werden per App-Ereignis/Frame-Änderung erkannt • Stop jederzeit möglich", color = Muted, fontSize = 10.sp)
+                                Divider(color = Color(0xFF393047))
+                                Text("FPS-OPTIMIERUNG", color = Pink, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                Text("Roblox-Grafikregler werden nur nach deiner Bestätigung geprüft. Der ursprüngliche Wert wird gespeichert; echte Roblox-FPS kann Android hier nicht zuverlässig auslesen.", color = Muted, fontSize = 11.sp)
+                                Button(
+                                    onClick = { showRobloxOptimizeDialog = true },
+                                    enabled = isCapturing,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("ROBLOX FPS OPTIMIEREN") }
+                                OutlinedButton(
+                                    onClick = { showRobloxRestoreDialog = true },
+                                    enabled = isCapturing && hasSavedRobloxGraphics,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("URSPRÜNGLICHE GRAFIK WIEDERHERSTELLEN") }
+                                Text("ROBLOX STATUS: $robloxAutomationStatus", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
@@ -348,6 +367,63 @@ class MainActivity : ComponentActivity() {
                     }
                     item { Text("Gesamte Grind-Zeit: ${SessionStore.format(total)}", color = Pink, fontWeight = FontWeight.Bold) }
                 }
+            }
+
+            if (showRobloxOptimizeDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRobloxOptimizeDialog = false },
+                    title = { Text("Roblox FPS optimieren?") },
+                    text = { Text("REDLINE öffnet nur das Roblox-Spielmenü und die Grafikeinstellungen. Falls der Grafikregler zugänglich ist, wird der bisherige Wert gespeichert und die Grafikqualität auf einen niedrigeren Leistungswert gesetzt. Keine Chats, Käufe, Konten oder Sicherheitseinstellungen werden bedient. FPS-Messwerte sind nicht verfügbar.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showRobloxOptimizeDialog = false
+                            if (!SettingsAutomationService.isEnabled(this@MainActivity)) {
+                                Toast.makeText(this@MainActivity, "Bitte aktiviere zuerst REDLINE unter Einstellungen > Bedienungshilfen und versuche es erneut.", Toast.LENGTH_LONG).show()
+                                runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                            } else {
+                                val launch = packageManager.getLaunchIntentForPackage("com.roblox.client")
+                                if (launch == null) {
+                                    Toast.makeText(this@MainActivity, "Roblox wurde nicht gefunden. Öffne Roblox und starte die Optimierung erneut.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    SettingsAutomationService.startRobloxFpsOptimization(this@MainActivity)
+                                    runCatching { startActivity(launch) }
+                                        .onFailure { Toast.makeText(this@MainActivity, "Roblox konnte nicht geöffnet werden: ${it.localizedMessage}", Toast.LENGTH_LONG).show() }
+                                }
+                            }
+                        }) { Text("BESTÄTIGEN") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRobloxOptimizeDialog = false }) { Text("ABBRECHEN") }
+                    }
+                )
+            }
+
+            if (showRobloxRestoreDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRobloxRestoreDialog = false },
+                    title = { Text("Grafikqualität wiederherstellen?") },
+                    text = { Text("REDLINE setzt den gespeicherten Roblox-Grafikwert zurück. Die Wiederherstellung funktioniert nur, wenn Roblox den Regler über die Bedienungshilfe bereitstellt.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showRobloxRestoreDialog = false
+                            if (!SettingsAutomationService.isEnabled(this@MainActivity)) {
+                                Toast.makeText(this@MainActivity, "Bitte aktiviere zuerst REDLINE unter Einstellungen > Bedienungshilfen.", Toast.LENGTH_LONG).show()
+                                runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                            } else {
+                                val launch = packageManager.getLaunchIntentForPackage("com.roblox.client")
+                                if (launch == null) {
+                                    Toast.makeText(this@MainActivity, "Roblox wurde nicht gefunden.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    SettingsAutomationService.restoreRobloxGraphics(this@MainActivity)
+                                    runCatching { startActivity(launch) }
+                                }
+                            }
+                        }) { Text("WIEDERHERSTELLEN") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRobloxRestoreDialog = false }) { Text("ABBRECHEN") }
+                    }
+                )
             }
         }
     }
