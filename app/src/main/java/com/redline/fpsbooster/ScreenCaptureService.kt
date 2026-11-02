@@ -35,7 +35,7 @@ import kotlin.math.max
  * User-consented MediaProjection session.
  *
  * Frames stay in memory, are reduced to a preview, and OCR is performed
- * locally only while Android Settings is the active app. No upload or recording.
+ * locally only while Android Settings or Samsung Device Care is active. No upload or recording.
  */
 class ScreenCaptureService : Service() {
     private var projection: MediaProjection? = null
