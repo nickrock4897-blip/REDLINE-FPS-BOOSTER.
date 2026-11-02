@@ -7,11 +7,15 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.media.projection.MediaProjectionManager
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,9 +45,28 @@ private val Muted = Color(0xFFB8B1C9)
 class MainActivity : ComponentActivity() {
     private var revision by mutableIntStateOf(0)
     private var selected by mutableStateOf("AFK Grind")
+    private lateinit var screenCaptureLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        screenCaptureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val data = result.data
+            if (result.resultCode == RESULT_OK && data != null) {
+                runCatching {
+                    startForegroundService(ScreenCaptureService.createIntent(this, result.resultCode, data))
+                }.onSuccess {
+                    SettingsAutomationService.start(this)
+                    Toast.makeText(this, "AI Live Screen wurde gestartet.", Toast.LENGTH_SHORT).show()
+                    runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                }.onFailure { error ->
+                    SettingsAutomationService.stop(this)
+                    Toast.makeText(this, "Live Screen konnte nicht starten: ${error.localizedMessage}", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                LiveScreenState.setStatus("Bildschirmfreigabe abgelehnt oder abgebrochen.")
+                Toast.makeText(this, "Ohne deine Freigabe wird kein Bildschirm erfasst.", Toast.LENGTH_SHORT).show()
+            }
+        }
         setContent { MaterialTheme(colorScheme = darkColorScheme(primary = Pink, secondary = Red, background = Bg, surface = CardBg)) { AppContent() } }
     }
 
@@ -54,26 +78,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startSettingsAutomation() {
+    private fun startAiControl() {
         if (!SettingsAutomationService.isEnabled(this)) {
             Toast.makeText(
                 this,
-                "Bitte aktiviere REDLINE unter Bedienungshilfen. Danach hier erneut starten.",
+                "Bitte aktiviere REDLINE zuerst unter Einstellungen > Bedienungshilfen. Danach erneut START AI CONTROL drücken.",
                 Toast.LENGTH_LONG
             ).show()
             runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             return
         }
-
-        SettingsAutomationService.start(this)
-        Toast.makeText(this, "REDLINE startet die lokale Live-Bildanalyse nur in Android-Einstellungen.", Toast.LENGTH_LONG).show()
-        runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-            .onFailure { SettingsAutomationService.stop(this) }
+        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        // Android shows its official per-session screen-sharing consent dialog.
+        screenCaptureLauncher.launch(manager.createScreenCaptureIntent())
     }
 
-    private fun stopSettingsAutomation() {
+    private fun stopAiControl() {
         SettingsAutomationService.stop(this)
-        Toast.makeText(this, "REDLINE-Automatik gestoppt.", Toast.LENGTH_SHORT).show()
+        stopService(ScreenCaptureService.stopIntent(this))
+        LiveScreenState.setStatus("Vom Benutzer gestoppt.")
+        Toast.makeText(this, "AI Control gestoppt.", Toast.LENGTH_SHORT).show()
     }
 
     private fun updateDisplayProtection() {
@@ -96,6 +120,12 @@ class MainActivity : ComponentActivity() {
         var tick by remember { mutableIntStateOf(0) }
         var performance by remember { mutableStateOf(getSharedPreferences("redline_afk_store", MODE_PRIVATE).getBoolean("performance_mode", true)) }
         var warning by remember { mutableStateOf("") }
+        val livePreview by LiveScreenState.preview.collectAsState()
+        val liveStatus by LiveScreenState.status.collectAsState()
+        val currentAction by LiveScreenState.currentAction.collectAsState()
+        val currentSettings by LiveScreenState.recognizedSummary.collectAsState()
+        val activePackage by LiveScreenState.activePackage.collectAsState()
+        val deviceDetails = remember(tick) { DeviceDiagnostics.summary(this) }
         LaunchedEffect(Unit) {
             while (true) {
                 tick++
@@ -163,27 +193,47 @@ class MainActivity : ComponentActivity() {
                     item {
                         Card(colors = CardDefaults.cardColors(containerColor = CardBg), shape = RoundedCornerShape(16.dp)) {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("SMART SETTINGS AUTOMATION", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("REDLINE liest den Bildschirm in Android-Einstellungen lokal per Live-Bildanalyse und kann dort klar beschriftete Einstellungen anklicken. Andere Apps werden nicht erfasst oder gesteuert.", color = Muted, fontSize = 12.sp)
-                                Button(onClick = { startSettingsAutomation() }, modifier = Modifier.fillMaxWidth().height(50.dp)) {
-                                    Icon(Icons.Default.TouchApp, null)
+                                Text("AI LIVE SCREEN & CONTROL", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                                Text("Android zeigt vor jeder Sitzung die offizielle Bildschirmfreigabe. REDLINE zeigt eine Live-Vorschau lokal auf dem Gerät. Automatische Klicks sind auf eindeutig erkannte Android-Einstellungen begrenzt.", color = Muted, fontSize = 12.sp)
+                                Button(onClick = { startAiControl() }, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                                    Icon(Icons.Default.CenterFocusStrong, null)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("LIVE-SCREEN-ASSISTENT STARTEN", fontWeight = FontWeight.Bold)
+                                    Text("START AI CONTROL", fontWeight = FontWeight.Bold)
                                 }
-                                OutlinedButton(onClick = { stopSettingsAutomation(); revision++ }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("AUTOMATIK STOPPEN")
+                                OutlinedButton(onClick = { stopAiControl(); revision++ }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("STOP AI CONTROL")
                                 }
-                                Text("Bildanalyse alle 1,8 Sekunden • nur lokal • nur Android-Einstellungen • jederzeit stoppbar", color = Muted, fontSize = 10.sp)
+                                Text("AI STATUS: $liveStatus", color = Pink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("CURRENT ACTION: $currentAction", color = Color.White, fontSize = 11.sp)
+                                Text("CURRENT SETTINGS: $currentSettings", color = Muted, fontSize = 11.sp)
+                                Text("ACTIVE APP: $activePackage", color = Muted, fontSize = 11.sp)
+                                if (livePreview != null) {
+                                    Image(
+                                        bitmap = livePreview!!.asImageBitmap(),
+                                        contentDescription = "Lokale Live-Bildschirmvorschau",
+                                        modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
+                                    )
+                                } else {
+                                    Text("LIVE SCREEN PREVIEW: Noch keine Freigabe aktiv.", color = Muted, fontSize = 11.sp)
+                                }
+                                Text("Kein Upload • keine Speicherung • Stop jederzeit möglich • Einstellungen werden nicht blind verändert", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
                     item {
                         val automationStatus = getSharedPreferences("redline_settings_automation", MODE_PRIVATE)
                             .getString("automation_status", "Noch nicht gestartet") ?: "Noch nicht gestartet"
-                        StatusCard("LIVE-SCREEN-STATUS", automationStatus, Pink, "REDLINE erkennt den Einstellungsbildschirm lokal. Rohbilder und erkannter Bildschirmtext werden nicht gespeichert oder hochgeladen.")
+                        StatusCard("OPTIMIZATION REPORT", automationStatus, Pink, "Die Automatik berichtet nur nachweisbare Aktionen. Unterstützte Werte werden unten angezeigt; manuelle Android-Sperren bleiben unangetastet.")
                     }
                     item { StatusCard("DISPLAY-SCHUTZ", if (running) "Aktiv • Display wach" else "Inaktiv", if (running) Color(0xFF70F0B4) else Muted, "Androids Keep-Screen-On-Funktion wird genutzt.") }
                     item { StatusCard("AFK SETTINGS", if (overlayGranted) "Bereit" else "Overlay-Einrichtung erforderlich", if (overlayGranted) Color(0xFF70F0B4) else Color(0xFFFFC66D), "Akku: $battery% • Energiesparmodus: ${if (powerManager.isPowerSaveMode) "AN" else "AUS"}") }
+                    item {
+                        SectionTitle("DEVICE DETECTION", "Gerätedaten vom aktuellen Android-System")
+                        deviceDetails.forEach { (label, value) ->
+                            Text("$label: $value", color = Muted, fontSize = 12.sp)
+                        }
+                    }
+                    item { StatusCard("RESTORE SETTINGS", "Keine Systemwerte automatisch geändert", Muted, "Die aktuelle Automatik startet nur die von Samsung bereitgestellte Gerätewartung. Geschützte Werte werden nicht verstellt; deshalb gibt es nichts automatisch zurückzusetzen.") }
                     item { StatusCard("PERFORMANCE MODE", if (performance) "ON" else "OFF", Pink, "Optimiert nur diese App; kein versprochener direkter Roblox-FPS-Boost.") }
                     if (warning.isNotBlank()) item { Text(warning, color = Color(0xFFFFC66D), fontSize = 13.sp) }
                     item { Text("Hinweis: Ein dauerhaft helles Display verbraucht mehr Akku und kann das Tablet erwärmen.", color = Muted, fontSize = 12.sp) }
