@@ -88,6 +88,7 @@ object LiveScreenState {
         _framesReceived.value = _framesReceived.value + 1
         if (sceneChanged) _sceneChanges.value = _sceneChanges.value + 1
         _lastFrameAt.value = SystemClock.elapsedRealtime()
+        _lastError.value = ""
         if (_isCapturing.value) {
             _aiState.value = "Analyzing"
             _status.value = "Screen frame empfangen • lokale Analyse läuft"
