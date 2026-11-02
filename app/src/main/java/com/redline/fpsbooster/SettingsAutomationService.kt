@@ -3,23 +3,19 @@ package com.redline.fpsbooster
 import android.accessibilityservice.AccessibilityService
 import android.content.ComponentName
 import android.content.Context
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
-import android.os.SystemClock
 import java.util.Locale
 
 /**
- * Explicitly enabled, settings-only automation.
- *
- * This service can inspect and click UI nodes only in Android Settings.
- * It never records the screen, performs global gestures, or interacts with
- * other applications. It only looks for a refresh-rate menu and a clearly
- * labelled high/adaptive refresh-rate option.
+ * User-started Android Settings helper.
+ * It only clicks clearly-labelled Samsung Device Care controls inside Settings.
+ * No screen recording, global gestures or interaction with other apps.
  */
 class SettingsAutomationService : AccessibilityService() {
-
     private val prefs by lazy {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
@@ -30,14 +26,15 @@ class SettingsAutomationService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        // The XML configuration also restricts events to Android Settings.
         serviceInfo = serviceInfo.apply {
-            packageNames = arrayOf("com.android.settings")
+            packageNames = arrayOf(SETTINGS_PACKAGE)
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_GENERIC
-            notificationTimeout = 120
+            notificationTimeout = 100
+            flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
         }
+        setStatus("Bereit. Starte REDLINE aus der App.")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -54,43 +51,49 @@ class SettingsAutomationService : AccessibilityService() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastActionAt < ACTION_COOLDOWN_MS) return
 
-        val root = rootInActiveWindow ?: return
+        val root = rootInActiveWindow ?: run {
+            setStatus("Warte auf Android-Einstellungen …")
+            return
+        }
+
         when (phase) {
-            PHASE_FIND_REFRESH_MENU -> {
-                val clicked = clickFirstMatching(root) { text ->
+            PHASE_FIND_DEVICE_CARE -> {
+                setStatus("Suche „Akku und Gerätewartung“ …")
+                val clicked = clickFirstMatching(root) { label ->
                     containsAny(
-                        text,
-                        "bewegungsflussigkeit",
-                        "bewegungsfluiditaet",
-                        "motion smoothness",
-                        "bildwiederholrate",
-                        "bildwiederholfrequenz",
-                        "bildschirmaktualisierungsrate",
-                        "refresh rate",
-                        "screen refresh rate"
+                        label,
+                        "akku und geraetewartung",
+                        "geraetewartung",
+                        "device care",
+                        "battery and device care"
                     )
                 }
-
                 if (clicked) {
                     lastActionAt = now
-                    prefs.edit().putInt(KEY_PHASE, PHASE_SELECT_HIGH).apply()
-                    Toast.makeText(applicationContext, "Menü gefunden. REDLINE sucht jetzt den höchsten klar erkennbaren Modus.", Toast.LENGTH_SHORT).show()
+                    prefs.edit().putInt(KEY_PHASE, PHASE_RUN_OPTIMIZE).apply()
+                    setStatus("Gerätewartung geöffnet. Suche „Jetzt optimieren“ …")
                 } else if (now - phaseStartedAt > PHASE_TIMEOUT_MS) {
-                    finish("Keine Bildwiederholraten-Einstellung gefunden. Es wurde nichts geändert.")
+                    finish("Gerätewartung nicht gefunden. Es wurde nichts geändert.")
                 }
             }
 
-            PHASE_SELECT_HIGH -> {
-                val clicked = clickFirstMatching(root) { text -> isHighRefreshOption(text) }
+            PHASE_RUN_OPTIMIZE -> {
+                setStatus("Suche den Knopf „Jetzt optimieren“ …")
+                val clicked = clickFirstMatching(root) { label ->
+                    val value = normalize(label)
+                    value == "jetzt optimieren" ||
+                        value == "optimize now" ||
+                        value == "optimieren jetzt"
+                }
                 if (clicked) {
                     lastActionAt = now
-                    finish("Fertig: Der höhere/adaptive Bildwiederholraten-Modus wurde ausgewählt.")
+                    finish("Samsung-Gerätewartung wurde gestartet.")
                 } else if (now - phaseStartedAt > PHASE_TIMEOUT_MS) {
-                    finish("Kein höherer Modus vorhanden oder eindeutig erkennbar. Es wurde nichts geändert.")
+                    finish("„Jetzt optimieren“ nicht gefunden. Es wurde nichts angetippt.")
                 }
             }
 
-            else -> stopAutomation()
+            else -> stopAutomation("Automatik gestoppt.")
         }
     }
 
@@ -109,9 +112,7 @@ class SettingsAutomationService : AccessibilityService() {
                 val current = candidate ?: return@repeat
                 if (current.isClickable && current.isEnabled &&
                     current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                ) {
-                    return true
-                }
+                ) return true
                 candidate = current.parent
             }
         }
@@ -121,23 +122,6 @@ class SettingsAutomationService : AccessibilityService() {
             if (clickFirstMatching(child, predicate)) return true
         }
         return false
-    }
-
-    private fun isHighRefreshOption(text: String): Boolean {
-        val value = normalize(text)
-        if (value == "hoch" || value == "high" ||
-            value == "adaptiv" || value == "adaptive"
-        ) return true
-
-        // Only accept an adaptive/high label when the same UI node also states
-        // a refresh-rate value. This avoids matching "adaptive brightness".
-        val hasRefreshValue = listOf("90 hz", "120 hz", "144 hz", "165 hz").any {
-            value.contains(it)
-        }
-        val explicitHigh = value.startsWith("hoch ") || value.startsWith("high ")
-        val explicitAdaptive = value.startsWith("adaptiv ") || value.startsWith("adaptive ")
-        return hasRefreshValue || (explicitHigh && value.contains("hz")) ||
-            (explicitAdaptive && value.contains("hz"))
     }
 
     private fun containsAny(value: String, vararg terms: String): Boolean =
@@ -153,19 +137,24 @@ class SettingsAutomationService : AccessibilityService() {
             .replace(Regex("\\s+"), " ")
             .trim()
 
+    private fun setStatus(message: String) {
+        prefs.edit().putString(KEY_STATUS, message).apply()
+    }
+
     private fun finish(message: String) {
-        stopAutomation()
+        stopAutomation(message)
         Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show()
     }
 
     override fun onInterrupt() {
-        stopAutomation()
+        stopAutomation("Android hat die Automatik unterbrochen.")
     }
 
-    private fun stopAutomation() {
+    private fun stopAutomation(message: String = "Automatik gestoppt.") {
         prefs.edit()
             .putBoolean(KEY_RUNNING, false)
             .putInt(KEY_PHASE, PHASE_IDLE)
+            .putString(KEY_STATUS, message)
             .apply()
         lastPhase = PHASE_IDLE
     }
@@ -174,15 +163,15 @@ class SettingsAutomationService : AccessibilityService() {
         private const val PREFS_NAME = "redline_settings_automation"
         private const val KEY_RUNNING = "automation_running"
         private const val KEY_PHASE = "automation_phase"
+        const val KEY_STATUS = "automation_status"
 
         private const val PHASE_IDLE = 0
-        private const val PHASE_FIND_REFRESH_MENU = 1
-        private const val PHASE_SELECT_HIGH = 2
-
+        private const val PHASE_FIND_DEVICE_CARE = 1
+        private const val PHASE_RUN_OPTIMIZE = 2
         private const val SETTINGS_PACKAGE = "com.android.settings"
-        private const val PHASE_TIMEOUT_MS = 10_000L
-        private const val ACTION_COOLDOWN_MS = 700L
-        private const val MAX_CLICK_ANCESTORS = 5
+        private const val PHASE_TIMEOUT_MS = 20_000L
+        private const val ACTION_COOLDOWN_MS = 800L
+        private const val MAX_CLICK_ANCESTORS = 6
 
         fun isEnabled(context: Context): Boolean {
             val enabled = Settings.Secure.getString(
@@ -190,15 +179,19 @@ class SettingsAutomationService : AccessibilityService() {
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
             ) ?: return false
             val expected = ComponentName(context, SettingsAutomationService::class.java)
-                .flattenToString()
-            return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+            return enabled.split(':').any { entry ->
+                val component = ComponentName.unflattenFromString(entry)
+                component?.packageName == expected.packageName &&
+                    component.className == expected.className
+            }
         }
 
         fun start(context: Context) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putBoolean(KEY_RUNNING, true)
-                .putInt(KEY_PHASE, PHASE_FIND_REFRESH_MENU)
+                .putInt(KEY_PHASE, PHASE_FIND_DEVICE_CARE)
+                .putString(KEY_STATUS, "Öffne Android-Einstellungen …")
                 .apply()
         }
 
@@ -207,6 +200,7 @@ class SettingsAutomationService : AccessibilityService() {
                 .edit()
                 .putBoolean(KEY_RUNNING, false)
                 .putInt(KEY_PHASE, PHASE_IDLE)
+                .putString(KEY_STATUS, "Automatik manuell gestoppt.")
                 .apply()
         }
     }
