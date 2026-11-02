@@ -259,6 +259,7 @@ class ScreenCaptureService : Service() {
             val changed = detectSceneChange(signature)
             LiveScreenState.publishPreview(preview)
             LiveScreenState.frameReceived(changed)
+            val analyzedFrameNumber = LiveScreenState.framesReceived.value
 
             // OCR is now processed for every user-approved captured app, not only
             // Android Settings. Results are summarized locally; raw text is discarded.
@@ -270,7 +271,9 @@ class ScreenCaptureService : Service() {
                     Log.d(TAG, "Frame analyzed. changed=$changed package=$packageName chars=${result.text.length}")
                     if (changed) {
                         workerHandler?.postDelayed({
-                            if (!stopping && projection != null) LiveScreenState.setWatching()
+                            if (!stopping && projection != null &&
+                                LiveScreenState.framesReceived.value == analyzedFrameNumber
+                            ) LiveScreenState.setWatching()
                         }, REACTION_STATE_MS)
                     }
                 }
