@@ -39,12 +39,13 @@ import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * User-approved screen guide. The service only captures the screen for local OCR
- * and draws a non-touchable pointer overlay. It never injects touches or changes settings.
+ * User-approved screen guide. It captures the screen for local OCR and draws
+ * a non-touchable highlight overlay. It never injects taps or changes settings.
  */
 class ScreenGuideService : Service() {
     private var projection: MediaProjection? = null
@@ -56,10 +57,13 @@ class ScreenGuideService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private var overlay: GuideOverlayView? = null
-    private var isProcessing = false
+    private val processing = AtomicBoolean(false)
     private var lastProcessedAt = 0L
     private var cleaningUp = false
     private lateinit var windowManager: WindowManager
+    private var captureWidth = 0
+    private var captureHeight = 0
+    private var captureDensity = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -72,7 +76,7 @@ class ScreenGuideService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (projection != null) return START_STICKY
+        if (projection != null) return START_NOT_STICKY
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, 0) ?: 0
         val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
@@ -81,7 +85,9 @@ class ScreenGuideService : Service() {
             @Suppress("DEPRECATION")
             intent?.getParcelableExtra(EXTRA_DATA)
         }
+
         if (resultCode != android.app.Activity.RESULT_OK || data == null) {
+            Log.e(TAG, "Screen capture permission data missing")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -90,11 +96,19 @@ class ScreenGuideService : Service() {
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(
                     NOTIFICATION_ID,
-                    buildNotification(),
+                    buildNotification("Bildschirm wird lokal analysiert.")
+                        ,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                 )
             } else {
-                startForeground(NOTIFICATION_ID, buildNotification())
+                startForeground(NOTIFICATION_ID, buildNotification("Bildschirm wird lokal analysiert."))
+            }
+
+            if (!android.provider.Settings.canDrawOverlays(this)) {
+                Log.e(TAG, "Overlay permission is missing; the guide cannot be displayed")
+                updateNotification("Berechtigung „Über anderen Apps anzeigen“ fehlt.")
+                stopSelf()
+                return START_NOT_STICKY
             }
 
             val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -107,75 +121,101 @@ class ScreenGuideService : Service() {
             projectionCallback = callback
             projection?.registerCallback(callback, mainHandler)
 
-            // Put the guide window on the screen before the first OCR frame arrives.
+            readDisplayMetrics()
             showOverlay()
             startScreenAnalysis()
+            if (overlay == null || virtualDisplay == null) {
+                Log.e(TAG, "Guide startup incomplete: overlay=${overlay != null}, capture=${virtualDisplay != null}")
+                updateNotification("Start fehlgeschlagen. Bitte Berechtigungen prüfen und erneut starten.")
+                stopSelf()
+                return START_NOT_STICKY
+            }
         } catch (error: Exception) {
             Log.e(TAG, "Could not start screen guide", error)
+            updateNotification("Screen Guide konnte nicht gestartet werden.")
             stopSelf()
             return START_NOT_STICKY
         }
-        return START_STICKY
+
+        return START_NOT_STICKY
+    }
+
+    @Suppress("DEPRECATION")
+    private fun readDisplayMetrics() {
+        val metrics = DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        captureWidth = metrics.widthPixels.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        captureHeight = metrics.heightPixels.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        captureDensity = metrics.densityDpi.takeIf { it > 0 } ?: resources.displayMetrics.densityDpi
+        Log.i(TAG, "Display metrics: ${captureWidth}x${captureHeight} @ ${captureDensity}dpi")
     }
 
     private fun startScreenAnalysis() {
-        // Use the full physical display size. resources.displayMetrics can describe
-        // only the app area on some Samsung/Android versions.
-        val realMetrics = DisplayMetrics()
-        @Suppress("DEPRECATION")
-        windowManager.defaultDisplay.getRealMetrics(realMetrics)
-        val width = realMetrics.widthPixels.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val height = realMetrics.heightPixels.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        val density = realMetrics.densityDpi.takeIf { it > 0 } ?: resources.displayMetrics.densityDpi
+        val width = captureWidth
+        val height = captureHeight
+        val density = captureDensity
+        if (width <= 0 || height <= 0 || density <= 0) {
+            throw IllegalStateException("Invalid display metrics: ${width}x${height}, density=$density")
+        }
 
         worker = HandlerThread("RedlineScreenOCR").also { it.start() }
         workerHandler = Handler(worker!!.looper)
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
 
         imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            val image = try {
+                reader.acquireLatestImage()
+            } catch (error: Exception) {
+                Log.w(TAG, "Could not acquire captured frame", error)
+                null
+            } ?: return@setOnImageAvailableListener
+
             val now = SystemClock.elapsedRealtime()
-            if (isProcessing || now - lastProcessedAt < 850L) {
+            if (now - lastProcessedAt < 650L || !processing.compareAndSet(false, true)) {
                 image.close()
                 return@setOnImageAvailableListener
             }
-
-            isProcessing = true
             lastProcessedAt = now
+
             val bitmap = imageToBitmap(image)
             image.close()
             if (bitmap == null) {
-                isProcessing = false
-                mainHandler.post {
-                    overlay?.showStatus("Bild konnte nicht gelesen werden. Bitte Screen Control neu starten.")
-                }
+                processing.set(false)
+                mainHandler.post { overlay?.showStatus("Bild konnte nicht gelesen werden. Screen Control neu starten.") }
                 return@setOnImageAvailableListener
             }
 
             val frameWidth = bitmap.width
             val frameHeight = bitmap.height
-            recognizer.process(InputImage.fromBitmap(bitmap, 0))
-                .addOnSuccessListener { result ->
-                    val match = findGuideMatch(result)
-                    mainHandler.post {
-                        overlay?.updateGuide(
-                            match?.bounds,
-                            match?.message ?: "Suche passende Einstellung … Öffne eine Einstellungsseite.",
-                            frameWidth,
-                            frameHeight
-                        )
+            try {
+                recognizer.process(InputImage.fromBitmap(bitmap, 0))
+                    .addOnSuccessListener { result ->
+                        val match = findGuideMatch(result)
+                        mainHandler.post {
+                            overlay?.updateGuide(
+                                match?.bounds,
+                                match?.message ?: "Suche nach der passenden Einstellung …",
+                                frameWidth,
+                                frameHeight
+                            )
+                        }
                     }
-                }
-                .addOnFailureListener { error ->
-                    Log.w(TAG, "On-device text recognition failed", error)
-                    mainHandler.post {
-                        overlay?.showStatus("Texterkennung läuft erneut. Halte die Einstellungsseite kurz offen.")
+                    .addOnFailureListener { error ->
+                        Log.w(TAG, "On-device text recognition failed", error)
+                        mainHandler.post {
+                            overlay?.showStatus("Texterkennung läuft erneut. Bitte Einstellungsseite offen halten.")
+                        }
                     }
-                }
-                .addOnCompleteListener {
-                    if (!bitmap.isRecycled) bitmap.recycle()
-                    isProcessing = false
-                }
+                    .addOnCompleteListener {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                        processing.set(false)
+                    }
+            } catch (error: Exception) {
+                Log.e(TAG, "Could not process captured frame", error)
+                if (!bitmap.isRecycled) bitmap.recycle()
+                processing.set(false)
+                mainHandler.post { overlay?.showStatus("Texterkennung konnte nicht gestartet werden.") }
+            }
         }, workerHandler)
 
         virtualDisplay = projection?.createVirtualDisplay(
@@ -212,6 +252,53 @@ class ScreenGuideService : Service() {
 
     private data class GuideMatch(val bounds: Rect, val message: String)
 
+    private data class MatchRule(
+        val terms: List<String>,
+        val message: String
+    )
+
+    private val matchRules = listOf(
+        MatchRule(
+            listOf(
+                "bewegungsflussigkeit", "bewegungsfluiditaet", "motion smoothness",
+                "bildwiederholrate", "bildwiederholfrequenz", "bildschirmaktualisierungsrate",
+                "bildfrequenz", "bildschirmfrequenz", "refresh rate", "screen refresh"
+            ),
+            "HIER TIPpen: Bewegungsflüssigkeit öffnen und die höchste verfügbare Bildwiederholrate wählen."
+        ),
+        MatchRule(
+            listOf("120 hz", "90 hz", "144 hz", "adaptive", "adaptiv", "standard", "hoch"),
+            "HIER wählen: die höchste Bildwiederholrate, die dein Tablet tatsächlich anbietet."
+        ),
+        MatchRule(
+            listOf(
+                "game booster", "spiele booster", "spieloptimierung", "spieleoptimierung",
+                "game optimizing", "gaming hub", "game plugins"
+            ),
+            "Game Booster öffnen. Temperatur- und Akkuschutz eingeschaltet lassen."
+        ),
+        MatchRule(
+            listOf("grafikmodus", "grafikqualitaet", "graphics mode", "graphics quality", "grafik"),
+            "Roblox-Grafik öffnen. Bei Rucklern die Qualität schrittweise senken."
+        ),
+        MatchRule(
+            listOf("akku und geraetewartung", "battery and device care", "geraetewartung", "device care"),
+            "Akku und Gerätewartung öffnen. Unnötige Hintergrund-Apps schließen, Schutzfunktionen aktiv lassen."
+        ),
+        MatchRule(
+            listOf("energiesparmodus", "power saving", "battery saver", "energie sparen"),
+            "Energiesparen prüfen. Ausschalten kann Akkuverbrauch und Wärme erhöhen."
+        ),
+        MatchRule(
+            listOf("anzeige", "display", "bildschirm"),
+            "HIER tippen: Anzeige öffnen. Danach nach Bewegungsflüssigkeit oder Bildwiederholrate suchen."
+        ),
+        MatchRule(
+            listOf("manuell", "manual"),
+            "Manuell auswählen. Danach kannst du die Roblox-Grafikqualität selbst einstellen."
+        )
+    )
+
     private fun normalize(value: String): String {
         return value.lowercase(Locale.GERMAN)
             .replace("ß", "ss")
@@ -224,77 +311,27 @@ class ScreenGuideService : Service() {
     }
 
     private fun findGuideMatch(result: Text): GuideMatch? {
-        val lines = result.textBlocks.flatMap { it.lines }
-        // Prefer specific labels. This also accepts the wording used by Samsung,
-        // Android and Roblox in German and English.
-        val candidates = lines.mapNotNull { line ->
-            val bounds = line.boundingBox ?: return@mapNotNull null
-            val value = normalize(line.text)
-            val message = when {
-                listOf(
-                    "bewegungsflussigkeit", "bewegungsfluiditaet", "motion smoothness",
-                    "bildwiederholrate", "bildwiederholfrequenz", "bildschirmaktualisierungsrate",
-                    "bildfrequenz", "bildschirmfrequenz", "refresh rate", "screen refresh"
-                ).any { value.contains(it) } ->
-                    "Hier tippen: Bildwiederholrate öffnen und die höchste verfügbare Option wählen."
+        val blocks = result.textBlocks
+        // Inspect both individual OCR lines and complete text blocks. Samsung can
+        // split a setting label across lines, so block-level matching is important.
+        for (rule in matchRules) {
+            for (block in blocks) {
+                val blockText = normalize(block.text)
+                if (!rule.terms.any { blockText.contains(it) }) continue
 
-                listOf("120 hz", "90 hz", "144 hz", "adaptive", "adaptiv").any { value.contains(it) } ->
-                    "Hier wählen: höchste Bildwiederholrate, die dein Tablet tatsächlich anbietet."
-
-                listOf(
-                    "game booster", "spiele booster", "spieloptimierung", "spieleoptimierung",
-                    "game optimizing", "gaming hub"
-                ).any { value.contains(it) } ->
-                    "Game Booster öffnen. Temperatur- und Akkuschutz eingeschaltet lassen."
-
-                listOf("grafikmodus", "grafikqualitaet", "graphics mode", "graphics quality").any { value.contains(it) } ->
-                    "Roblox-Grafik öffnen. Bei Rucklern die Qualität schrittweise senken."
-
-                value == "manuell" || value == "manual" ->
-                    "Manuell wählen. Danach kannst du die Roblox-Grafik selbst einstellen."
-
-                listOf("energiesparmodus", "power saving", "battery saver", "energie sparen").any { value.contains(it) } ->
-                    "Energiesparen prüfen. Ausschalten kann Akkuverbrauch und Wärme erhöhen."
-
-                value == "anzeige" || value.startsWith("anzeige ") ||
-                    value == "display" || value.startsWith("display ") ->
-                    "Hier tippen: Anzeige öffnen und nach Bewegungsflüssigkeit suchen."
-
-                value == "bildschirm" || value.startsWith("bildschirm ") ||
-                    value == "screen" || value.startsWith("screen ") ->
-                    "Bildschirm öffnen und nach Bildwiederholrate oder Bewegungsflüssigkeit suchen."
-
-                value == "akku" || value.startsWith("akku ") ||
-                    value == "battery" || value.startsWith("battery ") ->
-                    "Akku-Einstellungen prüfen. Schutzfunktionen eingeschaltet lassen."
-
-                else -> null
+                val matchingLine = block.lines.firstOrNull { line ->
+                    val lineText = normalize(line.text)
+                    rule.terms.any { lineText.contains(it) }
+                }
+                val bounds = matchingLine?.boundingBox ?: block.boundingBox
+                if (bounds != null) return GuideMatch(Rect(bounds), rule.message)
             }
-            if (message == null) null else GuideMatch(Rect(bounds), message)
         }
-
-        // A specific match later in the list should win over a generic menu heading.
-        return candidates.firstOrNull { match ->
-            val line = lines.firstOrNull { it.boundingBox == match.bounds }?.text.orEmpty()
-            val normalized = normalize(line)
-            normalized.contains("bildwiederhol") ||
-                normalized.contains("bewegungs") ||
-                normalized.contains("refresh") ||
-                normalized.contains("game booster") ||
-                normalized.contains("grafik") ||
-                normalized.contains("graphics") ||
-                normalized.contains("120 hz") ||
-                normalized.contains("90 hz") ||
-                normalized.contains("144 hz")
-        } ?: candidates.firstOrNull()
+        return null
     }
 
     private fun showOverlay() {
-        if (!android.provider.Settings.canDrawOverlays(this)) {
-            Log.w(TAG, "Overlay permission is missing; cannot draw the guide ring")
-            return
-        }
-
+        if (overlay != null) return
         val view = GuideOverlayView(this)
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -302,24 +339,35 @@ class ScreenGuideService : Service() {
             @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
+
+        // Use the exact capture dimensions and include the status/navigation-bar area.
+        // This keeps screenshot coordinates and overlay coordinates in the same space.
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
+            captureWidth,
+            captureHeight,
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             alpha = 1f
+            x = 0
+            y = 0
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
         }
 
         try {
             windowManager.addView(view, params)
             overlay = view
+            Log.i(TAG, "Guide overlay attached: ${captureWidth}x${captureHeight}")
         } catch (error: Exception) {
             Log.e(TAG, "Could not attach guide overlay", error)
+            overlay = null
         }
     }
 
@@ -334,7 +382,7 @@ class ScreenGuideService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(status: String): Notification {
         val stopIntent = Intent(this, ScreenGuideService::class.java).setAction(ACTION_STOP)
         val stopPending = PendingIntent.getService(
             this,
@@ -344,11 +392,18 @@ class ScreenGuideService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
-            .setContentTitle("REDLINE Screen Guide aktiv")
-            .setContentText("Bildschirm wird nur lokal nach Einstellungs-Texten durchsucht.")
+            .setContentTitle("REDLINE Screen Guide")
+            .setContentText(status)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_media_pause, "Stoppen", stopPending)
             .build()
+    }
+
+    private fun updateNotification(status: String) {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, buildNotification(status))
+        }.onFailure { Log.w(TAG, "Could not update notification", it) }
     }
 
     override fun onDestroy() {
@@ -398,20 +453,20 @@ private class GuideOverlayView(context: Context) : View(context) {
     private var frameWidth = 0
     private var frameHeight = 0
     private var lastTargetAt = 0L
-    private var message = "Öffne Anzeige oder Roblox. REDLINE sucht passende Einstellungen."
+    private var message = "REDLINE aktiv – öffne Android-Einstellungen und suche „Anzeige“."
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.rgb(255, 35, 65)
         style = Paint.Style.STROKE
         strokeWidth = 6f * density
-        setShadowLayer(8f * density, 0f, 0f, Color.rgb(255, 25, 50))
+        setShadowLayer(9f * density, 0f, 0f, Color.rgb(255, 25, 50))
     }
-    private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(48, 255, 35, 65)
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(52, 255, 35, 65)
         style = Paint.Style.FILL
     }
     private val bannerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(242, 18, 12, 28)
+        color = Color.argb(245, 18, 12, 28)
         style = Paint.Style.FILL
     }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -432,7 +487,7 @@ private class GuideOverlayView(context: Context) : View(context) {
             frameWidth = sourceWidth
             frameHeight = sourceHeight
             lastTargetAt = SystemClock.elapsedRealtime()
-        } else if (SystemClock.elapsedRealtime() - lastTargetAt > 4500L) {
+        } else if (SystemClock.elapsedRealtime() - lastTargetAt > 5500L) {
             target = null
         }
         postInvalidate()
@@ -446,41 +501,48 @@ private class GuideOverlayView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val d = density
-        val bannerLeft = 12f * d
         val bannerTop = 42f * d
-        val banner = RectF(bannerLeft, bannerTop, width - 12f * d, bannerTop + 58f * d)
+        val banner = RectF(12f * d, bannerTop, width - 12f * d, bannerTop + 62f * d)
         canvas.drawRoundRect(banner, 14f * d, 14f * d, bannerPaint)
-        canvas.drawText("REDLINE  •  SCREEN GUIDE", 24f * d, bannerTop + 21f * d, titlePaint)
+        canvas.drawText("REDLINE  •  SCREEN GUIDE AKTIV", 24f * d, bannerTop + 22f * d, titlePaint)
 
-        val text = messagePaint.let { paint ->
-            val available = (width - 48f * d).coerceAtLeast(80f * d)
-            val chars = paint.breakText(message, true, available, null)
-            if (chars < message.length && chars > 3) message.take(chars - 1) + "…" else message
+        val availableWidth = (width - 48f * d).coerceAtLeast(80f * d)
+        val messageChars = messagePaint.breakText(message, true, availableWidth, null)
+        val shownMessage = if (messageChars < message.length && messageChars > 3) {
+            message.take(messageChars - 1) + "…"
+        } else message
+        canvas.drawText(shownMessage, 24f * d, bannerTop + 46f * d, messagePaint)
+
+        val rect = target ?: return
+        if (frameWidth <= 0 || frameHeight <= 0 || width <= 0 || height <= 0) return
+
+        // Translate capture-image coordinates into this overlay window's coordinates.
+        val scaleX = width.toFloat() / frameWidth.toFloat()
+        val scaleY = height.toFloat() / frameHeight.toFloat()
+        val screenPosition = IntArray(2)
+        getLocationOnScreen(screenPosition)
+        val mapped = RectF(
+            rect.left * scaleX - screenPosition[0],
+            rect.top * scaleY - screenPosition[1],
+            rect.right * scaleX - screenPosition[0],
+            rect.bottom * scaleY - screenPosition[1]
+        )
+
+        // Surround the setting label with a larger oval so the target is obvious
+        // and still easy to tap manually. The overlay itself remains non-touchable.
+        val minWidth = 150f * d
+        if (mapped.width() < minWidth) {
+            val extra = (minWidth - mapped.width()) / 2f
+            mapped.left -= extra
+            mapped.right += extra
         }
-        canvas.drawText(text, 24f * d, bannerTop + 43f * d, messagePaint)
+        mapped.inset(-18f * d, -14f * d)
+        mapped.left = mapped.left.coerceIn(5f * d, width - 5f * d)
+        mapped.right = mapped.right.coerceIn(5f * d, width - 5f * d)
+        mapped.top = mapped.top.coerceIn(5f * d, height - 5f * d)
+        mapped.bottom = mapped.bottom.coerceIn(5f * d, height - 5f * d)
 
-        val rect = target
-        if (rect != null && frameWidth > 0 && frameHeight > 0) {
-            // ML Kit coordinates are in captured-image pixels. The overlay view can
-            // have different dimensions (especially on tablets and edge-to-edge UI).
-            val scaleX = width.toFloat() / frameWidth.toFloat()
-            val scaleY = height.toFloat() / frameHeight.toFloat()
-            val mapped = RectF(
-                rect.left * scaleX,
-                rect.top * scaleY,
-                rect.right * scaleX,
-                rect.bottom * scaleY
-            )
-            mapped.inset(-18f * d, -13f * d)
-            mapped.left = mapped.left.coerceIn(4f * d, width - 4f * d)
-            mapped.right = mapped.right.coerceIn(4f * d, width - 4f * d)
-            mapped.top = mapped.top.coerceIn(4f * d, height - 4f * d)
-            mapped.bottom = mapped.bottom.coerceIn(4f * d, height - 4f * d)
-
-            // Oval follows the whole text line so the red marking stays visible
-            // even when the setting label is much wider than it is tall.
-            canvas.drawRoundRect(mapped, 20f * d, 20f * d, boxPaint)
-            canvas.drawOval(mapped, ringPaint)
-        }
+        canvas.drawRoundRect(mapped, 22f * d, 22f * d, fillPaint)
+        canvas.drawOval(mapped, ringPaint)
     }
 }
