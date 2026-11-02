@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="settings_automation_description">REDLINE erstellt nur dann lokale Bildschirm-Schnappschüsse, wenn Android-Einstellungen geöffnet sind. Die Texterkennung läuft auf dem Gerät. Es werden keine Bilder oder Bildschirmtexte gespeichert oder hochgeladen. Klicks sind auf klar bezeichnete Bedienelemente in Android-Einstellungen begrenzt.</string>
+    <string name="settings_automation_description">REDLINE zeigt nach deiner Bestätigung eine lokale Bildschirmvorschau. Die Bedienungshilfe liest App-Wechsel nur zur Begrenzung der Steuerung. Bildschirmtexte werden nur in Android-Einstellungen und Samsung-Gerätewartung lokal analysiert. Automatische Klicks sind auf diese beiden Bereiche und den bestätigten Gerätewartungsablauf begrenzt.</string>
 </resources>
