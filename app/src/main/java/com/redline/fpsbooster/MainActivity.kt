@@ -151,13 +151,14 @@ class MainActivity : ComponentActivity() {
                 Text("AFK Grind • Dein Gaming-Begleiter", color = Muted, fontSize = 13.sp)
             }
             Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("AFK Grind", "AFK Settings", "Performance", "Verlauf").forEach { label ->
+                listOf("AFK Grind", "AFK Settings", "Performance", "Verlauf", "KI Chat").forEach { label ->
                     TextButton(onClick = { selected = label }, modifier = Modifier.weight(1f)) {
                         Text(label, color = if (selected == label) Pink else Muted, fontSize = 10.sp, fontWeight = if (selected == label) FontWeight.Bold else FontWeight.Normal)
                     }
                 }
             }
             when (selected) {
+                "KI Chat" -> AiChatScreen(this@MainActivity)
                 "AFK Grind" -> LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     item {
                         Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Color(0xFF271437), Color(0xFF28121F))), RoundedCornerShape(22.dp)).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
