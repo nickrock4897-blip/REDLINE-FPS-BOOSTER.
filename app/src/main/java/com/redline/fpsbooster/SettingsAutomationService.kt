@@ -4,74 +4,31 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
-import android.graphics.Bitmap
-import android.hardware.display.DisplayManager
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
-import android.view.Display
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * REDLINE local screen assistant.
- *
- * Android screenshots are requested only while the active window belongs to
- * Android Settings. Frames are OCR-processed on-device and immediately thrown
- * away; raw screenshots and OCR text are never saved or uploaded.
- *
- * Click automation is also restricted to the Android Settings package and
- * only activates explicitly-labelled Device Care controls.
+ * Accessibility side of the user-started assistant.
+ * It observes app identity to pause safely, but reads/clicks UI nodes only
+ * inside Android Settings. It never enters text or clicks password/chat fields.
  */
 class SettingsAutomationService : AccessibilityService() {
     private val prefs by lazy {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val screenshotBusy = AtomicBoolean(false)
-    private val recognizer by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    }
 
     private var phaseStartedAt = 0L
     private var lastActionAt = 0L
     private var lastPhase = PHASE_IDLE
-    private var scanLoopStarted = false
-
-    private val scanLoop = object : Runnable {
-        override fun run() {
-            if (!prefs.getBoolean(KEY_RUNNING, false)) {
-                scanLoopStarted = false
-                return
-            }
-
-            val root = rootInActiveWindow
-            val activePackage = root?.packageName?.toString()
-
-            // Stop screen observation as soon as the user leaves Android Settings.
-            if (activePackage != SETTINGS_PACKAGE) {
-                stopAutomation("Bildschirmfreigabe beendet: Android-Einstellungen verlassen.")
-                scanLoopStarted = false
-                return
-            }
-
-            captureLocalSettingsFrame()
-            mainHandler.postDelayed(this, SCREEN_SCAN_INTERVAL_MS)
-        }
-    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         serviceInfo = serviceInfo.apply {
-            packageNames = arrayOf(SETTINGS_PACKAGE)
+            packageNames = null // app identity only; UI nodes are read only in Settings
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
                 AccessibilityEvent.TYPE_VIEW_CLICKED
@@ -79,27 +36,25 @@ class SettingsAutomationService : AccessibilityService() {
             notificationTimeout = 120
             flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
         }
-        setStatus(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
-                "Bedienung bereit. Screen-Analyse läuft nur in Android-Einstellungen."
-            else
-                "Bedienung bereit. Bildschirm-Analyse benötigt Android 11 oder neuer."
-        )
+        LiveScreenState.setStatus("Bedienungshilfe bereit. Warte auf deine Freigabe.")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (!prefs.getBoolean(KEY_RUNNING, false)) return
-        if (event?.packageName?.toString() != SETTINGS_PACKAGE) return
+        val eventPackage = event?.packageName?.toString() ?: return
+        LiveScreenState.setActivePackage(eventPackage)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !scanLoopStarted) {
-            scanLoopStarted = true
-            mainHandler.removeCallbacks(scanLoop)
-            mainHandler.post(scanLoop)
+        // Do not inspect or control other apps. The MediaProjection preview is
+        // local, but OCR and accessibility actions are limited to Settings.
+        if (eventPackage != SETTINGS_PACKAGE) {
+            if (prefs.getBoolean(KEY_RUNNING, false)) {
+                stopAutomation("Automatik pausiert: Android-Einstellungen verlassen.")
+            }
+            return
         }
 
-        val root = rootInActiveWindow ?: return
-        val phase = prefs.getInt(KEY_PHASE, PHASE_IDLE)
+        if (!prefs.getBoolean(KEY_RUNNING, false)) return
 
+        val phase = prefs.getInt(KEY_PHASE, PHASE_IDLE)
         if (phase != lastPhase) {
             lastPhase = phase
             phaseStartedAt = SystemClock.elapsedRealtime()
@@ -108,10 +63,11 @@ class SettingsAutomationService : AccessibilityService() {
 
         val now = SystemClock.elapsedRealtime()
         if (now - lastActionAt < ACTION_COOLDOWN_MS) return
+        val root = rootInActiveWindow ?: return
 
         when (phase) {
             PHASE_FIND_DEVICE_CARE -> {
-                setStatus("Live-Analyse: Suche „Akku und Gerätewartung“ …")
+                setStatus("CURRENT ACTION: Suche „Akku und Gerätewartung“ …")
                 val clicked = clickFirstMatching(root) { label ->
                     containsAny(
                         label,
@@ -124,14 +80,14 @@ class SettingsAutomationService : AccessibilityService() {
                 if (clicked) {
                     lastActionAt = now
                     prefs.edit().putInt(KEY_PHASE, PHASE_RUN_OPTIMIZE).apply()
-                    setStatus("Gerätewartung gefunden und geöffnet. Prüfe den nächsten Bildschirm …")
+                    setStatus("CURRENT ACTION: Gerätewartung geöffnet; nächste Seite wird geprüft.")
                 } else if (now - phaseStartedAt > PHASE_TIMEOUT_MS) {
-                    finish("Gerätewartung nicht gefunden. Es wurde nichts verändert.")
+                    finish("Gerätewartung nicht gefunden. Keine Einstellung verändert.")
                 }
             }
 
             PHASE_RUN_OPTIMIZE -> {
-                setStatus("Live-Analyse: Suche den eindeutigen Knopf „Jetzt optimieren“ …")
+                setStatus("CURRENT ACTION: Suche den klar beschrifteten Knopf „Jetzt optimieren“ …")
                 val clicked = clickFirstMatching(root) { label ->
                     val value = normalize(label)
                     value == "jetzt optimieren" ||
@@ -140,93 +96,13 @@ class SettingsAutomationService : AccessibilityService() {
                 }
                 if (clicked) {
                     lastActionAt = now
-                    finish("Der eindeutig beschriftete Knopf „Jetzt optimieren“ wurde ausgewählt.")
+                    finish("Samsung-Gerätewartung: „Jetzt optimieren“ wurde gestartet.")
                 } else if (now - phaseStartedAt > PHASE_TIMEOUT_MS) {
-                    finish("„Jetzt optimieren“ wurde nicht gefunden. Es wurde nichts angetippt.")
+                    finish("„Jetzt optimieren“ nicht gefunden. Es wurde nichts angetippt.")
                 }
             }
 
             else -> stopAutomation("Automatik gestoppt.")
-        }
-    }
-
-    private fun captureLocalSettingsFrame() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            setStatus("Live-Bildanalyse ist auf dieser Android-Version nicht verfügbar.")
-            return
-        }
-        if (!screenshotBusy.compareAndSet(false, true)) return
-
-        try {
-            takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                mainExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshot: ScreenshotResult) {
-                        var softwareBitmap: Bitmap? = null
-                        try {
-                            val hardwareBuffer = screenshot.hardwareBuffer
-                            val hardwareBitmap = Bitmap.wrapHardwareBuffer(
-                                hardwareBuffer,
-                                screenshot.colorSpace
-                            )
-                            hardwareBuffer.close()
-
-                            softwareBitmap = hardwareBitmap?.copy(Bitmap.Config.ARGB_8888, false)
-                            hardwareBitmap?.recycle()
-
-                            val frame = softwareBitmap
-                            if (frame == null) {
-                                setStatus("Bild konnte nicht gelesen werden. Es wurde nichts angetippt.")
-                                screenshotBusy.set(false)
-                                return
-                            }
-
-                            recognizer.process(InputImage.fromBitmap(frame, 0))
-                                .addOnSuccessListener { result ->
-                                    // Store only a short category/status, never the raw screen text.
-                                    val observed = normalize(result.text)
-                                    val summary = when {
-                                        containsAny(observed, "akku und geraetewartung", "geraetewartung", "device care") ->
-                                            "Gerätewartung auf dem Bildschirm erkannt"
-                                        containsAny(observed, "jetzt optimieren", "optimize now") ->
-                                            "„Jetzt optimieren“ auf dem Bildschirm erkannt"
-                                        containsAny(observed, "anzeige", "display", "bildschirm") ->
-                                            "Anzeige-Einstellungen erkannt"
-                                        else -> "Bildschirm wird lokal geprüft"
-                                    }
-                                    setStatus("Live-Screen aktiv • $summary")
-                                }
-                                .addOnFailureListener {
-                                    setStatus("Live-Screen aktiv • Texterkennung versucht es erneut.")
-                                }
-                                .addOnCompleteListener {
-                                    frame.recycle()
-                                    screenshotBusy.set(false)
-                                }
-                        } catch (error: Exception) {
-                            softwareBitmap?.let { if (!it.isRecycled) it.recycle() }
-                            screenshotBusy.set(false)
-                            setStatus("Bildanalyse fehlgeschlagen. Es wurde nichts angetippt.")
-                        }
-                    }
-
-                    override fun onFailure(errorCode: Int) {
-                        screenshotBusy.set(false)
-                        val reason = when (errorCode) {
-                            ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT ->
-                                "Bildanalyse wartet auf Android."
-                            ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS ->
-                                "Android hat die Screenshot-Berechtigung abgelehnt."
-                            else -> "Android konnte gerade kein Bildschirmbild liefern."
-                        }
-                        setStatus(reason)
-                    }
-                }
-            )
-        } catch (error: Exception) {
-            screenshotBusy.set(false)
-            setStatus("Screen-Analyse konnte nicht gestartet werden.")
         }
     }
 
@@ -272,6 +148,7 @@ class SettingsAutomationService : AccessibilityService() {
 
     private fun setStatus(message: String) {
         prefs.edit().putString(KEY_STATUS, message).apply()
+        LiveScreenState.setAction(message)
     }
 
     private fun finish(message: String) {
@@ -280,14 +157,7 @@ class SettingsAutomationService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        stopAutomation("Android hat die Automatik unterbrochen.")
-    }
-
-    override fun onDestroy() {
-        mainHandler.removeCallbacks(scanLoop)
-        runCatching { recognizer.close() }
-        screenshotBusy.set(false)
-        super.onDestroy()
+        stopAutomation("Android hat die Bedienungshilfe unterbrochen.")
     }
 
     private fun stopAutomation(message: String = "Automatik gestoppt.") {
@@ -297,8 +167,7 @@ class SettingsAutomationService : AccessibilityService() {
             .putString(KEY_STATUS, message)
             .apply()
         lastPhase = PHASE_IDLE
-        scanLoopStarted = false
-        mainHandler.removeCallbacks(scanLoop)
+        LiveScreenState.setAction(message)
     }
 
     companion object {
@@ -314,7 +183,6 @@ class SettingsAutomationService : AccessibilityService() {
         private const val SETTINGS_PACKAGE = "com.android.settings"
         private const val PHASE_TIMEOUT_MS = 20_000L
         private const val ACTION_COOLDOWN_MS = 900L
-        private const val SCREEN_SCAN_INTERVAL_MS = 1_800L
         private const val MAX_CLICK_ANCESTORS = 6
 
         fun isEnabled(context: Context): Boolean {
@@ -335,8 +203,9 @@ class SettingsAutomationService : AccessibilityService() {
                 .edit()
                 .putBoolean(KEY_RUNNING, true)
                 .putInt(KEY_PHASE, PHASE_FIND_DEVICE_CARE)
-                .putString(KEY_STATUS, "Starte Live-Screen-Analyse …")
+                .putString(KEY_STATUS, "Starte AI-Assistent …")
                 .apply()
+            LiveScreenState.setAction("Starte Android-Einstellungsanalyse")
         }
 
         fun stop(context: Context) {
@@ -344,8 +213,9 @@ class SettingsAutomationService : AccessibilityService() {
                 .edit()
                 .putBoolean(KEY_RUNNING, false)
                 .putInt(KEY_PHASE, PHASE_IDLE)
-                .putString(KEY_STATUS, "Bildschirmfreigabe manuell gestoppt.")
+                .putString(KEY_STATUS, "Automatik manuell gestoppt.")
                 .apply()
+            LiveScreenState.setAction("Automatik manuell gestoppt.")
         }
     }
 }
