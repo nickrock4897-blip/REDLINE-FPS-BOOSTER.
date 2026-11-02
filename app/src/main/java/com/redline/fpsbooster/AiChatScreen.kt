@@ -69,8 +69,13 @@ fun AiChatScreen(context: Context) {
                             scope.launch {
                                 busy = true
                                 status = "Prüfe Verbindung ..."
-                                val result = withContext(Dispatchers.IO) { request(endpoint.trim().trimEnd('/') + "/health", token, "GET", null) }
-                                status = if (result.optBoolean("ok")) "Verbunden" else result.optString("error", "Server nicht bereit")
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching { request(endpoint.trim().trimEnd('/') + "/health", token, "GET", null) }
+                                }
+                                status = result.fold(
+                                    { if (it.optBoolean("ok")) "Verbunden" else it.optString("error", "Server nicht bereit") },
+                                    { it.message ?: "Verbindung fehlgeschlagen." }
+                                )
                                 busy = false
                             }
                         }, enabled = !busy && token.length >= 24 && endpoint.isNotBlank(), modifier = Modifier.weight(1f)) { Text("TESTEN") }
@@ -82,7 +87,7 @@ fun AiChatScreen(context: Context) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("CHAT", color = Color(0xFFDF42F5), fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { chat = listOf(ChatMessage("assistant", "Neuer Chat gestartet.")) }) { Text("NEUER CHAT", color = Color(0xFFB8B1C9)) }
+            TextButton(onClick = { chat = listOf(ChatMessage("assistant", "Neuer Chat gestartet.")) }, enabled = !busy) { Text("NEUER CHAT", color = Color(0xFFB8B1C9)) }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = scroll, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(chat) { msg ->
