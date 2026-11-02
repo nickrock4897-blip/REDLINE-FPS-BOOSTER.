@@ -66,8 +66,8 @@ class MainActivity : ComponentActivity() {
         }
 
         SettingsAutomationService.start(this)
-        Toast.makeText(this, "REDLINE sucht jetzt nur in den Anzeige-Einstellungen nach einem höheren Modus.", Toast.LENGTH_LONG).show()
-        runCatching { startActivity(Intent(Settings.ACTION_DISPLAY_SETTINGS)) }
+        Toast.makeText(this, "REDLINE sucht in den Android-Einstellungen nach Samsung-Gerätewartung.", Toast.LENGTH_LONG).show()
+        runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
             .onFailure { SettingsAutomationService.stop(this) }
     }
 
@@ -163,21 +163,26 @@ class MainActivity : ComponentActivity() {
                     item {
                         Card(colors = CardDefaults.cardColors(containerColor = CardBg), shape = RoundedCornerShape(16.dp)) {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("AUTOMATISCHE EINSTELLUNG", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("REDLINE öffnet die Anzeige-Einstellungen und tippt nur dann auf eine klar erkannte Option für eine höhere Bildwiederholrate. Andere Apps und persönliche Inhalte bleiben ausgeschlossen.", color = Muted, fontSize = 12.sp)
+                                Text("SMART SETTINGS AUTOMATION", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                                Text("REDLINE öffnet Android-Einstellungen, sucht „Akku und Gerätewartung“ und wählt dort nur den klar beschrifteten Knopf „Jetzt optimieren“. Andere Apps werden nicht gesteuert.", color = Muted, fontSize = 12.sp)
                                 Button(onClick = { startSettingsAutomation() }, modifier = Modifier.fillMaxWidth().height(50.dp)) {
                                     Icon(Icons.Default.TouchApp, null)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("ANZEIGE AUTOMATISCH EINSTELLEN", fontWeight = FontWeight.Bold)
+                                    Text("GERÄTEWARTUNG AUTOMATISCH STARTEN", fontWeight = FontWeight.Bold)
                                 }
                                 OutlinedButton(onClick = { stopSettingsAutomation(); revision++ }, modifier = Modifier.fillMaxWidth()) {
                                     Text("AUTOMATIK STOPPEN")
                                 }
-                                Text("Keine Bildschirmaufnahme • nur Android-Einstellungen • du kannst jederzeit stoppen", color = Muted, fontSize = 10.sp)
+                                Text("Keine Bildschirmaufnahme • nur Android-Einstellungen • jederzeit stoppbar", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
-                    item { StatusCard("DISPLAY-SCHUTZ", if (running) "Aktiv • Display wach" else "Inaktiv", if (running) Color(0xFF70F0B4) else Muted, "Keine simulierten Berührungen; Androids Keep-Screen-On-Funktion wird genutzt.") }
+                    item {
+                        val automationStatus = getSharedPreferences("redline_settings_automation", MODE_PRIVATE)
+                            .getString("automation_status", "Noch nicht gestartet") ?: "Noch nicht gestartet"
+                        StatusCard("AUTOMATIK-STATUS", automationStatus, Pink, "Hier siehst du, was REDLINE gefunden hat oder warum es abgebrochen wurde.")
+                    }
+                    item { StatusCard("DISPLAY-SCHUTZ", if (running) "Aktiv • Display wach" else "Inaktiv", if (running) Color(0xFF70F0B4) else Muted, "Androids Keep-Screen-On-Funktion wird genutzt.") }
                     item { StatusCard("AFK SETTINGS", if (overlayGranted) "Bereit" else "Overlay-Einrichtung erforderlich", if (overlayGranted) Color(0xFF70F0B4) else Color(0xFFFFC66D), "Akku: $battery% • Energiesparmodus: ${if (powerManager.isPowerSaveMode) "AN" else "AUS"}") }
                     item { StatusCard("PERFORMANCE MODE", if (performance) "ON" else "OFF", Pink, "Optimiert nur diese App; kein versprochener direkter Roblox-FPS-Boost.") }
                     if (warning.isNotBlank()) item { Text(warning, color = Color(0xFFFFC66D), fontSize = 13.sp) }
