@@ -330,7 +330,7 @@ class SettingsAutomationService : AccessibilityService() {
                 val args = Bundle().apply {
                     putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, requested)
                 }
-                if (node.performAction(AccessibilityNodeInfo.ACTION_SET_PROGRESS, args)) {
+                if (node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id, args)) {
                     prefs.edit()
                         .putFloat(KEY_ROBLOX_TARGET, requested)
                         .putInt(KEY_ROBLOX_PHASE, PHASE_ROBLOX_VERIFY)
