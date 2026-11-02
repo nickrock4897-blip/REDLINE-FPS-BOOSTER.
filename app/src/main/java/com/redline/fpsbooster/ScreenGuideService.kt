@@ -235,25 +235,25 @@ class ScreenGuideService : Service() {
                     "bewegungsflussigkeit", "bewegungsfluiditaet", "motion smoothness",
                     "bildwiederholrate", "bildwiederholfrequenz", "bildschirmaktualisierungsrate",
                     "bildfrequenz", "bildschirmfrequenz", "refresh rate", "screen refresh"
-                ).any(value::contains) ->
+                ).any { value.contains(it) } ->
                     "Hier tippen: Bildwiederholrate öffnen und die höchste verfügbare Option wählen."
 
-                listOf("120 hz", "90 hz", "144 hz", "adaptive", "adaptiv").any(value::contains) ->
+                listOf("120 hz", "90 hz", "144 hz", "adaptive", "adaptiv").any { value.contains(it) } ->
                     "Hier wählen: höchste Bildwiederholrate, die dein Tablet tatsächlich anbietet."
 
                 listOf(
                     "game booster", "spiele booster", "spieloptimierung", "spieleoptimierung",
                     "game optimizing", "gaming hub"
-                ).any(value::contains) ->
+                ).any { value.contains(it) } ->
                     "Game Booster öffnen. Temperatur- und Akkuschutz eingeschaltet lassen."
 
-                listOf("grafikmodus", "grafikqualitaet", "graphics mode", "graphics quality").any(value::contains) ->
+                listOf("grafikmodus", "grafikqualitaet", "graphics mode", "graphics quality").any { value.contains(it) } ->
                     "Roblox-Grafik öffnen. Bei Rucklern die Qualität schrittweise senken."
 
                 value == "manuell" || value == "manual" ->
                     "Manuell wählen. Danach kannst du die Roblox-Grafik selbst einstellen."
 
-                listOf("energiesparmodus", "power saving", "battery saver", "energie sparen").any(value::contains) ->
+                listOf("energiesparmodus", "power saving", "battery saver", "energie sparen").any { value.contains(it) } ->
                     "Energiesparen prüfen. Ausschalten kann Akkuverbrauch und Wärme erhöhen."
 
                 value == "anzeige" || value.startsWith("anzeige ") ||
