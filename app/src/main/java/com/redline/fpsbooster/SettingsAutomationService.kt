@@ -24,6 +24,7 @@ class SettingsAutomationService : AccessibilityService() {
     private var phaseStartedAt = 0L
     private var lastActionAt = 0L
     private var lastPhase = PHASE_IDLE
+    private var hasEnteredSettings = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -46,11 +47,12 @@ class SettingsAutomationService : AccessibilityService() {
         // Do not inspect or control other apps. The MediaProjection preview is
         // local, but OCR and accessibility actions are limited to Settings.
         if (eventPackage != SETTINGS_PACKAGE) {
-            if (prefs.getBoolean(KEY_RUNNING, false)) {
+            if (hasEnteredSettings && prefs.getBoolean(KEY_RUNNING, false)) {
                 stopAutomation("Automatik pausiert: Android-Einstellungen verlassen.")
             }
             return
         }
+        hasEnteredSettings = true
 
         if (!prefs.getBoolean(KEY_RUNNING, false)) return
 
