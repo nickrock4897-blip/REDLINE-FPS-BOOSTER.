@@ -1,27 +1,28 @@
 # REDLINE FPS BOOSTER
 
-Android-App mit AFK Grind und einem lokal arbeitenden Bildschirm-Assistenten für Android-Einstellungen.
+Android-App mit AFK Grind, gerätebezogener Diagnose und einem vom Benutzer gestarteten Live-Screen-Assistenten.
 
-## AFK Grind
-- Sitzungs-Timer mit Start, Pause, Fortsetzen und Beenden
-- Lokaler Sitzungsverlauf und Gesamtzeit
-- Optionales, verschiebbares Overlay (Android-Overlay-Berechtigung erforderlich)
-- Akkuanzeige, Energiespar-Hinweise und Performance-Modus für die App selbst
+## Live Screen & Control
+- **START AI CONTROL** ruft den offiziellen Android-Bildschirmfreigabe-Dialog auf. Die Freigabe muss für jede Sitzung vom Benutzer bestätigt werden.
+- Ein sichtbarer MediaProjection-Foreground-Service erhält fortlaufend Bildschirmbilder. Es werden keine Videos oder Screenshots auf Datei gespeichert oder an einen Server gesendet.
+- Die Live-Vorschau bleibt im Arbeitsspeicher. Die OCR-Texterkennung läuft lokal auf dem Tablet.
+- OCR wird nur ausgeführt, wenn Android-Einstellungen oder Samsung Device Care aktiv sind.
+- Die Bedienungshilfe empfängt App-Wechsel-Ereignisse, liest aber Bedienungselemente und führt Klicks nur in `com.android.settings` und `com.samsung.android.lool` aus.
+- Automatisch unterstützt ist derzeit der Samsung-Gerätewartungsablauf: Gerätewartung finden und einen eindeutig beschrifteten „Jetzt optimieren“-Knopf auswählen.
+- **STOP AI CONTROL** und die Stop-Aktion in der laufenden Benachrichtigung beenden die Bildschirmfreigabe und den Assistenten.
 
-## Lokaler Bildschirm-Assistent
-- Verwendet Androids Bedienungshilfe. Der Benutzer muss sie selbst in Android aktivieren.
-- Erst nach dem Start in REDLINE wird der Bildschirm erfasst.
-- Die Bildschirm-Erfassung ist auf die Android-Einstellungs-App `com.android.settings` beschränkt.
-- Auf Android 11 oder neuer erstellt REDLINE in kurzen Abständen Bildschirm-Schnappschüsse, erkennt sichtbaren Text direkt auf dem Gerät und verwirft die Bilder danach.
-- Es werden keine Screenshots oder erkannten Bildschirmtexte gespeichert oder an einen Server gesendet.
-- Die automatische Bedienung klickt nur klar bezeichnete Bedienelemente der Android-Einstellungen, die für den gestarteten Ablauf vorgesehen sind.
-- Beim Verlassen der Android-Einstellungen oder beim Drücken von „Automatik stoppen“ wird die Sitzung beendet.
-- Das ist lokale Texterkennung mit festen Regeln, kein verbundenes generatives KI-Modell und keine freie Steuerung aller Apps.
+## Gerätdiagnose
+REDLINE zeigt Hersteller/Modell, Android-Version, One-UI-Angabe (wenn das Gerät sie bereitstellt), aktive und unterstützte Display-Modi, verfügbaren/gesamten RAM und freien/gesamten internen Speicher. Werte werden nur aus Android-Systeminformationen gelesen.
 
-## Grenzen
-- Android kann geschützte Bildschirme oder Inhalte von der Bildschirm-Erfassung ausschließen.
-- Die Automatik verändert nur eindeutig erkannte, unterstützte Einstellungen.
-- Kein direkter FPS-Zuwachs oder eine Änderung der Roblox-Grafik-Engine wird versprochen.
+## Grenzen und Sicherheit
+- Das ist eine lokale OCR- und Regelsteuerung, kein angebundenes generatives KI-Modell. Die App sendet keine Bildschirmbilder an ChatGPT oder einen anderen KI-Dienst.
+- Die Anzeigevorschau kann den ganzen Bildschirm enthalten, aber Bilddaten bleiben nur im Arbeitsspeicher und sind nicht für Fernzugriff verfügbar.
+- Automatische Klicks sind auf Android-Einstellungen und Samsung Device Care begrenzt. Andere Apps – einschließlich Roblox – werden nicht automatisch bedient; persönliche Inhalte, Chats und Eingabefelder werden nicht angetippt.
+- Roblox-Grafikoptionen müssen in Roblox selbst vom Benutzer geprüft und angepasst werden. REDLINE ändert keine Roblox-Dateien.
+- Geschützte Fenster können von Android geschwärzt oder von der Erfassung ausgeschlossen werden.
+- Animationsskalen, Energiesparschutz, thermischer Schutz, Sicherheitsoptionen und gesperrte Systemwerte werden nicht automatisch geändert. Es gibt daher keine automatische Rücksetzung für solche Werte.
+- Das System kann nach einem bestätigten Device-Care-Auftrag Hintergrundaufgaben beenden; dieser Vorgang ist nicht rückgängig zu machen.
+- Ein direkter FPS-Zuwachs wird nicht versprochen. Unterstützte Display-Modi und Systemressourcen hängen vom tatsächlichen Modell ab.
 
 ## APK bauen
 GitHub Actions baut den aktuellen Quellcode. Unter **Actions → Android APK** kann der Workflow manuell gestartet werden. Nach einem erfolgreichen Lauf die APK im Bereich **Artifacts** herunterladen. Die Debug-APK ist nicht für eine öffentliche Play-Store-Veröffentlichung signiert.
