@@ -100,6 +100,8 @@ class ScreenCaptureService : Service() {
                 watchdogReported = false
                 lastFrameAt = SystemClock.elapsedRealtime()
                 LiveScreenState.setWatching()
+                workerHandler?.removeCallbacks(watchdog)
+                workerHandler?.postDelayed(watchdog, WATCHDOG_INTERVAL_MS)
                 LiveScreenState.setAction("Live-Analyse fortgesetzt")
             }
             return START_NOT_STICKY
