@@ -185,7 +185,7 @@ class ScreenCaptureService : Service() {
 
             // The complete preview remains on-device. OCR is performed only in
             // Android Settings; on other apps the image is merely previewed locally.
-            if (LiveScreenState.activePackage.value == SETTINGS_PACKAGE) {
+            if (LiveScreenState.activePackage.value in CONTROL_PACKAGES) {
                 recognizer.process(InputImage.fromBitmap(preview, 0))
                     .addOnSuccessListener { result ->
                         val normalized = normalize(result.text)
@@ -307,6 +307,8 @@ class ScreenCaptureService : Service() {
         private const val EXTRA_DATA = "projection_permission_data"
         private const val FRAME_INTERVAL_MS = 1_500L
         private const val SETTINGS_PACKAGE = "com.android.settings"
+        private const val DEVICE_CARE_PACKAGE = "com.samsung.android.lool"
+        private val CONTROL_PACKAGES = setOf(SETTINGS_PACKAGE, DEVICE_CARE_PACKAGE)
 
         fun createIntent(context: Context, resultCode: Int, data: Intent): Intent =
             Intent(context, ScreenCaptureService::class.java).apply {
