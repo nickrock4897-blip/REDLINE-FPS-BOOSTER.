@@ -2,6 +2,8 @@ package com.redline.fpsbooster
 
 import android.content.Intent
 import android.net.Uri
+import android.media.projection.MediaProjectionManager
+import android.widget.Toast
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
@@ -11,6 +13,8 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,9 +43,24 @@ private val Muted = Color(0xFFB8B1C9)
 class MainActivity : ComponentActivity() {
     private var revision by mutableIntStateOf(0)
     private var selected by mutableStateOf("AFK Grind")
+    private lateinit var screenCaptureLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        screenCaptureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val permissionData = result.data
+            if (result.resultCode == RESULT_OK && permissionData != null) {
+                runCatching {
+                    startForegroundService(ScreenGuideService.createIntent(this, result.resultCode, permissionData))
+                }.onSuccess {
+                    Toast.makeText(this, "REDLINE Screen Guide gestartet.", Toast.LENGTH_SHORT).show()
+                }.onFailure {
+                    Toast.makeText(this, "Screen Guide konnte nicht gestartet werden: ${it.localizedMessage}", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                Toast.makeText(this, "Bildschirmfreigabe wurde nicht erteilt.", Toast.LENGTH_SHORT).show()
+            }
+        }
         setContent { MaterialTheme(colorScheme = darkColorScheme(primary = Pink, secondary = Red, background = Bg, surface = CardBg)) { AppContent() } }
     }
 
@@ -51,6 +70,23 @@ class MainActivity : ComponentActivity() {
         if (SessionStore.isActive(this) && Settings.canDrawOverlays(this)) {
             runCatching { startForegroundService(AfkOverlayService.intent(this)) }
         }
+    }
+
+    private fun startScreenControl() {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Bitte erlaube REDLINE zuerst die Anzeige über anderen Apps. Danach erneut START SCREEN CONTROL drücken.", Toast.LENGTH_LONG).show()
+            runCatching {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            }
+            return
+        }
+        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        screenCaptureLauncher.launch(manager.createScreenCaptureIntent())
+    }
+
+    private fun stopScreenControl() {
+        stopService(Intent(this, ScreenGuideService::class.java))
+        Toast.makeText(this, "REDLINE Screen Guide gestoppt.", Toast.LENGTH_SHORT).show()
     }
 
     private fun updateDisplayProtection() {
@@ -134,6 +170,23 @@ class MainActivity : ComponentActivity() {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(onClick = { SessionStore.pause(this@MainActivity); revision++ }, enabled = active && running, modifier = Modifier.weight(1f)) { Text("Pause") }
                                 OutlinedButton(onClick = { SessionStore.resume(this@MainActivity); revision++ }, enabled = active && !running, modifier = Modifier.weight(1f)) { Text("Fortsetzen") }
+                            }
+                        }
+                    }
+                    item {
+                        Card(colors = CardDefaults.cardColors(containerColor = CardBg), shape = RoundedCornerShape(16.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("AI SCREEN CONTROL", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                                Text("REDLINE erkennt passende Einstellungs-Texte auf deinem freigegebenen Bildschirm und markiert die Stelle mit einem roten Kreis. Du tippst selbst.", color = Muted, fontSize = 12.sp)
+                                Button(onClick = { startScreenControl() }, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                                    Icon(Icons.Default.CenterFocusStrong, null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("START SCREEN CONTROL", fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(onClick = { stopScreenControl(); revision++ }, modifier = Modifier.fillMaxWidth()) {
+                                    Text("SCREEN CONTROL STOPPEN")
+                                }
+                                Text("On-device-Texterkennung • keine automatischen Taps • keine Änderungen ohne dich", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
