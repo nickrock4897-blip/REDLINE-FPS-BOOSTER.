@@ -265,22 +265,24 @@ class ScreenCaptureService : Service() {
             // Android Settings. Results are summarized locally; raw text is discarded.
             recognizer.process(InputImage.fromBitmap(preview, 0))
                 .addOnSuccessListener { result ->
-                    val packageName = LiveScreenState.activePackage.value
-                    val summary = summarizeOnDevice(result.text, packageName)
-                    LiveScreenState.analysisCompleted(summary, changed)
-                    Log.d(TAG, "Frame analyzed. changed=$changed package=$packageName chars=${result.text.length}")
-                    if (changed) {
-                        workerHandler?.postDelayed({
-                            if (!stopping && projection != null &&
-                                LiveScreenState.framesReceived.value == analyzedFrameNumber
-                            ) LiveScreenState.setWatching()
-                        }, REACTION_STATE_MS)
+                    if (!processingPaused && !stopping) {
+                        val packageName = LiveScreenState.activePackage.value
+                        val summary = summarizeOnDevice(result.text, packageName)
+                        LiveScreenState.analysisCompleted(summary, changed)
+                        Log.d(TAG, "Frame analyzed. changed=$changed package=$packageName chars=${result.text.length}")
+                        if (changed) {
+                            workerHandler?.postDelayed({
+                                if (!processingPaused && !stopping && projection != null &&
+                                    LiveScreenState.framesReceived.value == analyzedFrameNumber
+                                ) LiveScreenState.setWatching()
+                            }, REACTION_STATE_MS)
+                        }
                     }
                 }
                 .addOnFailureListener { error ->
                     val message = "ML Kit Texterkennung: ${error.localizedMessage ?: error.javaClass.simpleName}"
                     Log.e(TAG, message, error)
-                    LiveScreenState.analysisFailed(message)
+                    if (!processingPaused && !stopping) LiveScreenState.analysisFailed(message)
                 }
                 .addOnCompleteListener {
                     busy.set(false)
