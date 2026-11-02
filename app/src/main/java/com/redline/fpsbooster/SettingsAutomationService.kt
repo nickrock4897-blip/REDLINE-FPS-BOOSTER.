@@ -46,7 +46,7 @@ class SettingsAutomationService : AccessibilityService() {
 
         // Do not inspect or control other apps. The MediaProjection preview is
         // local, but OCR and accessibility actions are limited to Settings.
-        if (eventPackage != SETTINGS_PACKAGE) {
+        if (eventPackage !in CONTROL_PACKAGES) {
             if (hasEnteredSettings && prefs.getBoolean(KEY_RUNNING, false)) {
                 stopAutomation("Automatik pausiert: Android-Einstellungen verlassen.")
             }
@@ -183,6 +183,8 @@ class SettingsAutomationService : AccessibilityService() {
         private const val PHASE_RUN_OPTIMIZE = 2
 
         private const val SETTINGS_PACKAGE = "com.android.settings"
+        private const val DEVICE_CARE_PACKAGE = "com.samsung.android.lool"
+        private val CONTROL_PACKAGES = setOf(SETTINGS_PACKAGE, DEVICE_CARE_PACKAGE)
         private const val PHASE_TIMEOUT_MS = 20_000L
         private const val ACTION_COOLDOWN_MS = 900L
         private const val MAX_CLICK_ANCESTORS = 6
