@@ -24,7 +24,7 @@ class SettingsAutomationService : AccessibilityService() {
     private var phaseStartedAt = 0L
     private var lastActionAt = 0L
     private var lastPhase = PHASE_IDLE
-    private var hasEnteredSettings = false
+    private var wasOutsideAllowedApp = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -47,14 +47,19 @@ class SettingsAutomationService : AccessibilityService() {
         // Do not inspect or control other apps. The MediaProjection preview is
         // local, but OCR and accessibility actions are limited to Settings.
         if (eventPackage !in CONTROL_PACKAGES) {
-            if (hasEnteredSettings && prefs.getBoolean(KEY_RUNNING, false)) {
-                stopAutomation("Automatik pausiert: Android-Einstellungen verlassen.")
+            if (prefs.getBoolean(KEY_RUNNING, false)) {
+                wasOutsideAllowedApp = true
+                setStatus("PAUSIERT: Außerhalb Android-Einstellungen/Device Care werden keine Bedienelemente gelesen oder angeklickt.")
             }
             return
         }
-        hasEnteredSettings = true
 
         if (!prefs.getBoolean(KEY_RUNNING, false)) return
+        if (wasOutsideAllowedApp) {
+            wasOutsideAllowedApp = false
+            phaseStartedAt = SystemClock.elapsedRealtime()
+            lastActionAt = 0L
+        }
 
         val phase = prefs.getInt(KEY_PHASE, PHASE_IDLE)
         if (phase != lastPhase) {
@@ -169,6 +174,7 @@ class SettingsAutomationService : AccessibilityService() {
             .putString(KEY_STATUS, message)
             .apply()
         lastPhase = PHASE_IDLE
+        wasOutsideAllowedApp = false
         LiveScreenState.setAction(message)
     }
 
