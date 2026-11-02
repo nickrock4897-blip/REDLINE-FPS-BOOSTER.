@@ -48,6 +48,7 @@ class ScreenCaptureService : Service() {
     private val busy = AtomicBoolean(false)
     private var lastFrameAt = 0L
     private var stopping = false
+    private var processingPaused = false
     private var watchdogReported = false
     private var previousSignature: IntArray? = null
 
@@ -57,7 +58,7 @@ class ScreenCaptureService : Service() {
 
     private val watchdog = object : Runnable {
         override fun run() {
-            if (stopping || projection == null) return
+            if (stopping || projection == null || processingPaused) return
             val now = SystemClock.elapsedRealtime()
             val last = lastFrameAt
             if (last > 0L && now - last > FRAME_TIMEOUT_MS) {
@@ -87,6 +88,22 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_PAUSE) {
+            processingPaused = true
+            LiveScreenState.setAiState("Paused", "Bildschirmverarbeitung pausiert")
+            LiveScreenState.setStatus("Paused • Bildschirmbilder werden nicht analysiert")
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_RESUME) {
+            if (projection != null && !stopping) {
+                processingPaused = false
+                watchdogReported = false
+                lastFrameAt = SystemClock.elapsedRealtime()
+                LiveScreenState.setWatching()
+                LiveScreenState.setAction("Live-Analyse fortgesetzt")
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_STOP) {
             stopping = true
             SettingsAutomationService.stop(this)
@@ -192,6 +209,10 @@ class ScreenCaptureService : Service() {
         val image = runCatching { reader.acquireLatestImage() }.getOrNull()
         if (image == null) {
             Log.w(TAG, "ImageReader callback arrived without an image.")
+            return@OnImageAvailableListener
+        }
+        if (processingPaused) {
+            image.close()
             return@OnImageAvailableListener
         }
         if (now - lastFrameAt < FRAME_INTERVAL_MS || !busy.compareAndSet(false, true)) {
@@ -383,6 +404,7 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         stopping = true
+        processingPaused = false
         workerHandler?.removeCallbacks(watchdog)
         SettingsAutomationService.stop(this)
         imageReader?.setOnImageAvailableListener(null, null)
@@ -413,6 +435,8 @@ class ScreenCaptureService : Service() {
         private const val CHANNEL_ID = "redline_live_screen"
         private const val NOTIFICATION_ID = 88
         private const val ACTION_STOP = "com.redline.fpsbooster.LIVE_SCREEN_STOP"
+        private const val ACTION_PAUSE = "com.redline.fpsbooster.LIVE_SCREEN_PAUSE"
+        private const val ACTION_RESUME = "com.redline.fpsbooster.LIVE_SCREEN_RESUME"
         private const val EXTRA_RESULT_CODE = "projection_result_code"
         private const val EXTRA_DATA = "projection_permission_data"
         private const val FRAME_INTERVAL_MS = 1_200L
@@ -436,5 +460,11 @@ class ScreenCaptureService : Service() {
 
         fun stopIntent(context: Context): Intent =
             Intent(context, ScreenCaptureService::class.java).setAction(ACTION_STOP)
+
+        fun pauseIntent(context: Context): Intent =
+            Intent(context, ScreenCaptureService::class.java).setAction(ACTION_PAUSE)
+
+        fun resumeIntent(context: Context): Intent =
+            Intent(context, ScreenCaptureService::class.java).setAction(ACTION_RESUME)
     }
 }
