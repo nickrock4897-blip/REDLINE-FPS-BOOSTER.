@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -45,25 +47,26 @@ private val Muted = Color(0xFFB8B1C9)
 class MainActivity : ComponentActivity() {
     private var revision by mutableIntStateOf(0)
     private var selected by mutableStateOf("AFK Grind")
+    private var startRequestPending = false
     private lateinit var screenCaptureLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         screenCaptureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            startRequestPending = false
             val data = result.data
             if (result.resultCode == RESULT_OK && data != null) {
                 runCatching {
                     startForegroundService(ScreenCaptureService.createIntent(this, result.resultCode, data))
                 }.onSuccess {
-                    SettingsAutomationService.start(this)
-                    Toast.makeText(this, "AI Live Screen wurde gestartet.", Toast.LENGTH_SHORT).show()
-                    runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                    Toast.makeText(this, "AI gestartet. Warte auf Bildschirmbilder …", Toast.LENGTH_SHORT).show()
                 }.onFailure { error ->
                     SettingsAutomationService.stop(this)
+                    LiveScreenState.setError("Live Screen konnte nicht starten: ${error.localizedMessage ?: error.javaClass.simpleName}")
                     Toast.makeText(this, "Live Screen konnte nicht starten: ${error.localizedMessage}", Toast.LENGTH_LONG).show()
                 }
             } else {
-                LiveScreenState.setStatus("Bildschirmfreigabe abgelehnt oder abgebrochen.")
+                LiveScreenState.stopSession("Bildschirmfreigabe abgebrochen. AI wurde nicht gestartet.")
                 Toast.makeText(this, "Ohne deine Freigabe wird kein Bildschirm erfasst.", Toast.LENGTH_SHORT).show()
             }
         }
@@ -79,24 +82,48 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startAiControl() {
-        if (!SettingsAutomationService.isEnabled(this)) {
-            Toast.makeText(
-                this,
-                "Bitte aktiviere REDLINE zuerst unter Einstellungen > Bedienungshilfen. Danach erneut START AI CONTROL drücken.",
-                Toast.LENGTH_LONG
-            ).show()
-            runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        if (startRequestPending || LiveScreenState.isCapturing.value) {
+            Toast.makeText(this, "AI läuft bereits oder wird gerade gestartet.", Toast.LENGTH_SHORT).show()
             return
         }
+
+        startRequestPending = true
+        LiveScreenState.beginSession()
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        // Android shows its official per-session screen-sharing consent dialog.
-        screenCaptureLauncher.launch(manager.createScreenCaptureIntent())
+        try {
+            // Android 14+ can be asked for the full device display, instead of a single app window.
+            val captureIntent = if (Build.VERSION.SDK_INT >= 34) {
+                manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            } else {
+                manager.createScreenCaptureIntent()
+            }
+            screenCaptureLauncher.launch(captureIntent)
+        } catch (error: Exception) {
+            startRequestPending = false
+            LiveScreenState.setError("Start fehlgeschlagen: ${error.localizedMessage ?: error.javaClass.simpleName}")
+            Toast.makeText(this, "AI konnte nicht gestartet werden: ${error.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun pauseAiControl() {
+        if (LiveScreenState.isCapturing.value) {
+            runCatching { startService(ScreenCaptureService.pauseIntent(this)) }
+                .onFailure { LiveScreenState.setError("Pause fehlgeschlagen: ${it.localizedMessage}") }
+        }
+    }
+
+    private fun resumeAiControl() {
+        if (LiveScreenState.isCapturing.value) {
+            runCatching { startService(ScreenCaptureService.resumeIntent(this)) }
+                .onFailure { LiveScreenState.setError("Fortsetzen fehlgeschlagen: ${it.localizedMessage}") }
+        }
     }
 
     private fun stopAiControl() {
+        startRequestPending = false
         SettingsAutomationService.stop(this)
-        stopService(ScreenCaptureService.stopIntent(this))
-        LiveScreenState.setStatus("Vom Benutzer gestoppt.")
+        runCatching { stopService(ScreenCaptureService.stopIntent(this)) }
+        LiveScreenState.stopSession("Vom Benutzer gestoppt.")
         Toast.makeText(this, "AI Control gestoppt.", Toast.LENGTH_SHORT).show()
     }
 
@@ -125,6 +152,14 @@ class MainActivity : ComponentActivity() {
         val currentAction by LiveScreenState.currentAction.collectAsState()
         val currentSettings by LiveScreenState.recognizedSummary.collectAsState()
         val activePackage by LiveScreenState.activePackage.collectAsState()
+        val aiState by LiveScreenState.aiState.collectAsState()
+        val isCapturing by LiveScreenState.isCapturing.collectAsState()
+        val framesReceived by LiveScreenState.framesReceived.collectAsState()
+        val framesAnalyzed by LiveScreenState.framesAnalyzed.collectAsState()
+        val sceneChanges by LiveScreenState.sceneChanges.collectAsState()
+        val lastFrameAt by LiveScreenState.lastFrameAt.collectAsState()
+        val lastError by LiveScreenState.lastError.collectAsState()
+        val secondsSinceFrame = if (lastFrameAt > 0L) ((SystemClock.elapsedRealtime() - lastFrameAt) / 1000L).coerceAtLeast(0L) else -1L
         val deviceDetails = remember(tick) { DeviceDiagnostics.summary(this) }
         LaunchedEffect(Unit) {
             while (true) {
@@ -195,19 +230,44 @@ class MainActivity : ComponentActivity() {
                         Card(colors = CardDefaults.cardColors(containerColor = CardBg), shape = RoundedCornerShape(16.dp)) {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("AI LIVE SCREEN & CONTROL", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("Android zeigt vor jeder Sitzung die offizielle Bildschirmfreigabe. REDLINE zeigt eine Live-Vorschau lokal auf dem Gerät. Automatische Klicks sind auf eindeutig erkannte Android-Einstellungen begrenzt.", color = Muted, fontSize = 12.sp)
-                                Button(onClick = { startAiControl() }, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                                Text("START AI fordert die Android-Freigabe für den gesamten Gerätebildschirm an. Neue Frames werden lokal verarbeitet; keine KI-Statusanzeige wird ohne tatsächliche Frames als aktiv gemeldet.", color = Muted, fontSize = 12.sp)
+                                AiStateAvatar(aiState, framesReceived, framesAnalyzed, sceneChanges)
+                                Button(
+                                    onClick = { startAiControl() },
+                                    enabled = !isCapturing && aiState != "Starting",
+                                    modifier = Modifier.fillMaxWidth().height(50.dp)
+                                ) {
                                     Icon(Icons.Default.CenterFocusStrong, null)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("START AI CONTROL", fontWeight = FontWeight.Bold)
+                                    Text(if (aiState == "Starting") "STARTING AI…" else if (isCapturing) "AI ACTIVE" else "START AI", fontWeight = FontWeight.Bold)
                                 }
-                                OutlinedButton(onClick = { stopAiControl(); revision++ }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("STOP AI CONTROL")
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = { if (aiState == "Paused") resumeAiControl() else pauseAiControl() },
+                                        enabled = isCapturing,
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text(if (aiState == "Paused") "RESUME" else "PAUSE") }
+                                    OutlinedButton(
+                                        onClick = { stopAiControl(); revision++ },
+                                        enabled = isCapturing || aiState == "Starting",
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("STOP AI") }
                                 }
                                 Text("AI STATUS: $liveStatus", color = Pink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("AI STATE: $aiState", color = Color.White, fontSize = 11.sp)
                                 Text("CURRENT ACTION: $currentAction", color = Color.White, fontSize = 11.sp)
                                 Text("CURRENT SETTINGS: $currentSettings", color = Muted, fontSize = 11.sp)
                                 Text("ACTIVE APP: $activePackage", color = Muted, fontSize = 11.sp)
+                                Text(
+                                    "FRAMES: $framesReceived empfangen • $framesAnalyzed analysiert • $sceneChanges Änderungen",
+                                    color = Muted, fontSize = 10.sp
+                                )
+                                Text(
+                                    if (secondsSinceFrame < 0) "LETZTES FRAME: noch keines empfangen"
+                                    else "LETZTES FRAME: vor $secondsSinceFrame Sek.",
+                                    color = if (secondsSinceFrame > 9) Red else Muted, fontSize = 10.sp
+                                )
+                                if (lastError.isNotBlank()) Text("DEBUG: $lastError", color = Color(0xFFFFC66D), fontSize = 10.sp)
                                 if (livePreview != null) {
                                     Image(
                                         bitmap = livePreview!!.asImageBitmap(),
@@ -215,9 +275,9 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
                                     )
                                 } else {
-                                    Text("LIVE SCREEN PREVIEW: Noch keine Freigabe aktiv.", color = Muted, fontSize = 11.sp)
+                                    Text("LIVE SCREEN PREVIEW: Noch kein Bildschirmbild empfangen.", color = Muted, fontSize = 11.sp)
                                 }
-                                Text("Kein Upload • keine Datei-Speicherung • OCR nur in Einstellungen/Device Care • Stop jederzeit möglich", color = Muted, fontSize = 10.sp)
+                                Text("Frames und OCR bleiben lokal • neue Fenster werden per App-Ereignis/Frame-Änderung erkannt • Stop jederzeit möglich", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
