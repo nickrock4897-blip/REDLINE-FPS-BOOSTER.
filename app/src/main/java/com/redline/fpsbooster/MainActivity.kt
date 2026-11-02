@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
         }
 
         SettingsAutomationService.start(this)
-        Toast.makeText(this, "REDLINE sucht in den Android-Einstellungen nach Samsung-Gerätewartung.", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "REDLINE startet die lokale Live-Bildanalyse nur in Android-Einstellungen.", Toast.LENGTH_LONG).show()
         runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
             .onFailure { SettingsAutomationService.stop(this) }
     }
