@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.provider.Settings
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
@@ -14,7 +15,7 @@ import java.util.Locale
 /**
  * Accessibility side of the user-started assistant.
  * It observes app identity to pause safely, but reads/clicks UI nodes only
- * inside Android Settings. It never enters text or clicks password/chat fields.
+ * inside Android Settings and Samsung Device Care. It never enters text or clicks password/chat fields.
  */
 class SettingsAutomationService : AccessibilityService() {
     private val prefs by lazy {
@@ -164,7 +165,20 @@ class SettingsAutomationService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
+        LiveScreenState.setActivePackage("Bedienungshilfe unterbrochen")
         stopAutomation("Android hat die Bedienungshilfe unterbrochen.")
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        LiveScreenState.setActivePackage("Bedienungshilfe nicht aktiv")
+        stopAutomation("Bedienungshilfe wurde getrennt.")
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        LiveScreenState.setActivePackage("Bedienungshilfe nicht aktiv")
+        stopAutomation("Bedienungshilfe nicht aktiv.")
+        super.onDestroy()
     }
 
     private fun stopAutomation(message: String = "Automatik gestoppt.") {
