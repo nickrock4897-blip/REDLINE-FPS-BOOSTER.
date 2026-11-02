@@ -74,7 +74,7 @@ class SettingsAutomationService : AccessibilityService() {
                 if (clicked) {
                     lastActionAt = now
                     prefs.edit().putInt(KEY_PHASE, PHASE_SELECT_HIGH).apply()
-                    showToast("Menü gefunden. REDLINE sucht jetzt den höchsten klar erkennbaren Modus.")
+                    Toast.makeText(applicationContext, "Menü gefunden. REDLINE sucht jetzt den höchsten klar erkennbaren Modus.", Toast.LENGTH_SHORT).show()
                 } else if (now - phaseStartedAt > PHASE_TIMEOUT_MS) {
                     finish("Keine Bildwiederholraten-Einstellung gefunden. Es wurde nichts geändert.")
                 }
