@@ -59,6 +59,7 @@ class ScreenGuideService : Service() {
     private var overlay: GuideOverlayView? = null
     private val processing = AtomicBoolean(false)
     private var lastProcessedAt = 0L
+    private var lastNotificationGuide = ""
     private var cleaningUp = false
     private lateinit var windowManager: WindowManager
     private var captureWidth = 0
@@ -192,9 +193,18 @@ class ScreenGuideService : Service() {
                     .addOnSuccessListener { result ->
                         val match = findGuideMatch(result)
                         mainHandler.post {
+                            val guideText = match?.message
+                                ?: "Kein eindeutiger Treffer. Manuell: Einstellungen > Anzeige > Bewegungsflüssigkeit."
+                            if (guideText != lastNotificationGuide) {
+                                lastNotificationGuide = guideText
+                                // Keep a manual fallback visible in the persistent notification.
+                                // Android may hide application overlays on protected Settings pages.
+                                updateNotification(guideText.replace("HIER TIPpen:", "Tippe:")
+                                    .replace("HIER wählen:", "Wähle:").take(110))
+                            }
                             overlay?.updateGuide(
                                 match?.bounds,
-                                match?.message ?: "Suche nach der passenden Einstellung …",
+                                guideText,
                                 frameWidth,
                                 frameHeight
                             )
@@ -296,6 +306,10 @@ class ScreenGuideService : Service() {
         MatchRule(
             listOf("manuell", "manual"),
             "Manuell auswählen. Danach kannst du die Roblox-Grafikqualität selbst einstellen."
+        ),
+        MatchRule(
+            listOf("einstellungen", "settings"),
+            "Öffne in den Einstellungen den Punkt Anzeige und danach Bewegungsflüssigkeit. Falls Android den roten Kreis ausblendet, folge diesem Hinweis in der REDLINE-Benachrichtigung."
         )
     )
 
