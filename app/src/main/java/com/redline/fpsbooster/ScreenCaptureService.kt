@@ -58,6 +58,7 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            SettingsAutomationService.stop(this)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -273,6 +274,7 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         stopping = true
+        SettingsAutomationService.stop(this)
         imageReader?.setOnImageAvailableListener(null, null)
         runCatching { projectionCallback?.let { projection?.unregisterCallback(it) } }
         runCatching { virtualDisplay?.release() }
