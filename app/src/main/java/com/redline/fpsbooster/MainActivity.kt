@@ -164,23 +164,23 @@ class MainActivity : ComponentActivity() {
                         Card(colors = CardDefaults.cardColors(containerColor = CardBg), shape = RoundedCornerShape(16.dp)) {
                             Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("SMART SETTINGS AUTOMATION", color = Pink, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-                                Text("REDLINE öffnet Android-Einstellungen, sucht „Akku und Gerätewartung“ und wählt dort nur den klar beschrifteten Knopf „Jetzt optimieren“. Andere Apps werden nicht gesteuert.", color = Muted, fontSize = 12.sp)
+                                Text("REDLINE liest den Bildschirm in Android-Einstellungen lokal per Live-Bildanalyse und kann dort klar beschriftete Einstellungen anklicken. Andere Apps werden nicht erfasst oder gesteuert.", color = Muted, fontSize = 12.sp)
                                 Button(onClick = { startSettingsAutomation() }, modifier = Modifier.fillMaxWidth().height(50.dp)) {
                                     Icon(Icons.Default.TouchApp, null)
                                     Spacer(Modifier.width(8.dp))
-                                    Text("GERÄTEWARTUNG AUTOMATISCH STARTEN", fontWeight = FontWeight.Bold)
+                                    Text("LIVE-SCREEN-ASSISTENT STARTEN", fontWeight = FontWeight.Bold)
                                 }
                                 OutlinedButton(onClick = { stopSettingsAutomation(); revision++ }, modifier = Modifier.fillMaxWidth()) {
                                     Text("AUTOMATIK STOPPEN")
                                 }
-                                Text("Keine Bildschirmaufnahme • nur Android-Einstellungen • jederzeit stoppbar", color = Muted, fontSize = 10.sp)
+                                Text("Bildanalyse alle 1,8 Sekunden • nur lokal • nur Android-Einstellungen • jederzeit stoppbar", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
                     item {
                         val automationStatus = getSharedPreferences("redline_settings_automation", MODE_PRIVATE)
                             .getString("automation_status", "Noch nicht gestartet") ?: "Noch nicht gestartet"
-                        StatusCard("AUTOMATIK-STATUS", automationStatus, Pink, "Hier siehst du, was REDLINE gefunden hat oder warum es abgebrochen wurde.")
+                        StatusCard("LIVE-SCREEN-STATUS", automationStatus, Pink, "REDLINE erkennt den Einstellungsbildschirm lokal. Rohbilder und erkannter Bildschirmtext werden nicht gespeichert oder hochgeladen.")
                     }
                     item { StatusCard("DISPLAY-SCHUTZ", if (running) "Aktiv • Display wach" else "Inaktiv", if (running) Color(0xFF70F0B4) else Muted, "Androids Keep-Screen-On-Funktion wird genutzt.") }
                     item { StatusCard("AFK SETTINGS", if (overlayGranted) "Bereit" else "Overlay-Einrichtung erforderlich", if (overlayGranted) Color(0xFF70F0B4) else Color(0xFFFFC66D), "Akku: $battery% • Energiesparmodus: ${if (powerManager.isPowerSaveMode) "AN" else "AUS"}") }
