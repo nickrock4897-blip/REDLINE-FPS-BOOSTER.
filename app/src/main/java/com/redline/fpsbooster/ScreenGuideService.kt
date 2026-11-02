@@ -28,6 +28,8 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.DisplayMetrics
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -38,6 +40,7 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.Locale
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * User-approved screen guide. The service only captures the screen for local OCR
@@ -56,14 +59,13 @@ class ScreenGuideService : Service() {
     private var isProcessing = false
     private var lastProcessedAt = 0L
     private var cleaningUp = false
+    private lateinit var windowManager: WindowManager
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
     }
-
-    private lateinit var windowManager: WindowManager
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
@@ -94,6 +96,7 @@ class ScreenGuideService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, buildNotification())
             }
+
             val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projection = manager.getMediaProjection(resultCode, data)
             val callback = object : MediaProjection.Callback() {
@@ -103,9 +106,12 @@ class ScreenGuideService : Service() {
             }
             projectionCallback = callback
             projection?.registerCallback(callback, mainHandler)
-            startScreenAnalysis()
+
+            // Put the guide window on the screen before the first OCR frame arrives.
             showOverlay()
-        } catch (_: Exception) {
+            startScreenAnalysis()
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not start screen guide", error)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -113,40 +119,58 @@ class ScreenGuideService : Service() {
     }
 
     private fun startScreenAnalysis() {
-        val metrics = resources.displayMetrics
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
+        // Use the full physical display size. resources.displayMetrics can describe
+        // only the app area on some Samsung/Android versions.
+        val realMetrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        windowManager.defaultDisplay.getRealMetrics(realMetrics)
+        val width = realMetrics.widthPixels.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val height = realMetrics.heightPixels.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val density = realMetrics.densityDpi.takeIf { it > 0 } ?: resources.displayMetrics.densityDpi
+
         worker = HandlerThread("RedlineScreenOCR").also { it.start() }
         workerHandler = Handler(worker!!.looper)
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3)
+
         imageReader?.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             val now = SystemClock.elapsedRealtime()
-            if (isProcessing || now - lastProcessedAt < 1100L) {
+            if (isProcessing || now - lastProcessedAt < 850L) {
                 image.close()
                 return@setOnImageAvailableListener
             }
+
             isProcessing = true
             lastProcessedAt = now
             val bitmap = imageToBitmap(image)
             image.close()
             if (bitmap == null) {
                 isProcessing = false
+                mainHandler.post {
+                    overlay?.showStatus("Bild konnte nicht gelesen werden. Bitte Screen Control neu starten.")
+                }
                 return@setOnImageAvailableListener
             }
+
+            val frameWidth = bitmap.width
+            val frameHeight = bitmap.height
             recognizer.process(InputImage.fromBitmap(bitmap, 0))
                 .addOnSuccessListener { result ->
                     val match = findGuideMatch(result)
                     mainHandler.post {
                         overlay?.updateGuide(
                             match?.bounds,
-                            match?.message ?: "Keine passende Einstellung erkannt. Öffne Einstellungen oder das Roblox-Menü."
+                            match?.message ?: "Suche passende Einstellung … Öffne eine Einstellungsseite.",
+                            frameWidth,
+                            frameHeight
                         )
                     }
                 }
-                .addOnFailureListener {
-                    mainHandler.post { overlay?.updateGuide(null, "Bildschirm wird geprüft. Bitte halte die Einstellungsseite kurz offen.") }
+                .addOnFailureListener { error ->
+                    Log.w(TAG, "On-device text recognition failed", error)
+                    mainHandler.post {
+                        overlay?.showStatus("Texterkennung läuft erneut. Halte die Einstellungsseite kurz offen.")
+                    }
                 }
                 .addOnCompleteListener {
                     if (!bitmap.isRecycled) bitmap.recycle()
@@ -180,64 +204,97 @@ class ScreenGuideService : Service() {
             val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
             if (cropped !== padded) padded.recycle()
             cropped
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not convert captured frame", error)
             null
         }
     }
 
     private data class GuideMatch(val bounds: Rect, val message: String)
 
+    private fun normalize(value: String): String {
+        return value.lowercase(Locale.GERMAN)
+            .replace("ß", "ss")
+            .replace("ä", "ae")
+            .replace("ö", "oe")
+            .replace("ü", "ue")
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
     private fun findGuideMatch(result: Text): GuideMatch? {
         val lines = result.textBlocks.flatMap { it.lines }
-        for (line in lines) {
-            val bounds = line.boundingBox ?: continue
-            val value = line.text.lowercase(Locale.GERMAN)
-                .replace("ß", "ss")
-                .replace("ä", "ae")
-                .replace("ö", "oe")
-                .replace("ü", "ue")
+        // Prefer specific labels. This also accepts the wording used by Samsung,
+        // Android and Roblox in German and English.
+        val candidates = lines.mapNotNull { line ->
+            val bounds = line.boundingBox ?: return@mapNotNull null
+            val value = normalize(line.text)
             val message = when {
-                value.contains("bewegungsflussigkeit") ||
-                    value.contains("bewegungsfluiditaet") ||
-                    value.contains("motion smoothness") ||
-                    value.contains("bildwiederholrate") ->
-                    "Hier tippen: Bewegungsfluessigkeit oeffnen; danach Adaptiv oder die hoechste Option waehlen."
+                listOf(
+                    "bewegungsflussigkeit", "bewegungsfluiditaet", "motion smoothness",
+                    "bildwiederholrate", "bildwiederholfrequenz", "bildschirmaktualisierungsrate",
+                    "bildfrequenz", "bildschirmfrequenz", "refresh rate", "screen refresh"
+                ).any(value::contains) ->
+                    "Hier tippen: Bildwiederholrate öffnen und die höchste verfügbare Option wählen."
 
-                value.contains("adaptiv") || value.contains("adaptive") ||
-                    value.contains("120 hz") || value.contains("90 hz") || value.contains("144 hz") ->
-                    "Hier waehlen: hoechste Bildwiederholrate, die dein Tablet tatsaechlich anbietet."
+                listOf("120 hz", "90 hz", "144 hz", "adaptive", "adaptiv").any(value::contains) ->
+                    "Hier wählen: höchste Bildwiederholrate, die dein Tablet tatsächlich anbietet."
 
-                value.contains("game booster") || value.contains("spiele booster") ||
-                    value.contains("spieloptimierung") || value.contains("game optimizing") ->
-                    "Game Booster oeffnen. Nur angebotene Leistungsoptionen nutzen; Temperatur- und Akkuschutz aktiv lassen."
+                listOf(
+                    "game booster", "spiele booster", "spieloptimierung", "spieleoptimierung",
+                    "game optimizing", "gaming hub"
+                ).any(value::contains) ->
+                    "Game Booster öffnen. Temperatur- und Akkuschutz eingeschaltet lassen."
 
-                value.contains("grafikmodus") || value.contains("graphics mode") ->
-                    "Roblox-Grafikmodus oeffnen. Manuell waehlen und die Qualitaet bei Rucklern schrittweise senken."
+                listOf("grafikmodus", "grafikqualitaet", "graphics mode", "graphics quality").any(value::contains) ->
+                    "Roblox-Grafik öffnen. Bei Rucklern die Qualität schrittweise senken."
 
                 value == "manuell" || value == "manual" ->
-                    "Manuell auswaehlen. Danach kannst du die Roblox-Grafikqualitaet selbst passend einstellen."
+                    "Manuell wählen. Danach kannst du die Roblox-Grafik selbst einstellen."
 
-                value.contains("energiesparmodus") || value.contains("power saving") ||
-                    value.contains("battery saver") ->
-                    "Energiesparen pruefen. Ausschalten kann Akkuverbrauch und Waerme erhoehen; entscheide bewusst."
+                listOf("energiesparmodus", "power saving", "battery saver", "energie sparen").any(value::contains) ->
+                    "Energiesparen prüfen. Ausschalten kann Akkuverbrauch und Wärme erhöhen."
 
                 value == "anzeige" || value.startsWith("anzeige ") ||
                     value == "display" || value.startsWith("display ") ->
-                    "Hier tippen: Anzeige oeffnen und nach Bewegungsfluessigkeit suchen."
+                    "Hier tippen: Anzeige öffnen und nach Bewegungsflüssigkeit suchen."
+
+                value == "bildschirm" || value.startsWith("bildschirm ") ||
+                    value == "screen" || value.startsWith("screen ") ->
+                    "Bildschirm öffnen und nach Bildwiederholrate oder Bewegungsflüssigkeit suchen."
 
                 value == "akku" || value.startsWith("akku ") ||
                     value == "battery" || value.startsWith("battery ") ->
-                    "Akku-Einstellungen pruefen. Schutzfunktionen nicht deaktivieren."
+                    "Akku-Einstellungen prüfen. Schutzfunktionen eingeschaltet lassen."
 
                 else -> null
             }
-            if (message != null) return GuideMatch(Rect(bounds), message)
+            if (message == null) null else GuideMatch(Rect(bounds), message)
         }
-        return null
+
+        // A specific match later in the list should win over a generic menu heading.
+        return candidates.firstOrNull { match ->
+            val line = lines.firstOrNull { it.boundingBox == match.bounds }?.text.orEmpty()
+            val normalized = normalize(line)
+            normalized.contains("bildwiederhol") ||
+                normalized.contains("bewegungs") ||
+                normalized.contains("refresh") ||
+                normalized.contains("game booster") ||
+                normalized.contains("grafik") ||
+                normalized.contains("graphics") ||
+                normalized.contains("120 hz") ||
+                normalized.contains("90 hz") ||
+                normalized.contains("144 hz")
+        } ?: candidates.firstOrNull()
     }
 
     private fun showOverlay() {
-        if (!android.provider.Settings.canDrawOverlays(this)) return
+        if (!android.provider.Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "Overlay permission is missing; cannot draw the guide ring")
+            return
+        }
+
         val view = GuideOverlayView(this)
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -251,16 +308,18 @@ class ScreenGuideService : Service() {
             type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            alpha = 0.76f
+            alpha = 1f
         }
-        runCatching {
+
+        try {
             windowManager.addView(view, params)
             overlay = view
+        } catch (error: Exception) {
+            Log.e(TAG, "Could not attach guide overlay", error)
         }
     }
 
@@ -318,6 +377,7 @@ class ScreenGuideService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val TAG = "RedlineScreenGuide"
         private const val CHANNEL_ID = "redline_screen_guide"
         private const val NOTIFICATION_ID = 82
         private const val EXTRA_RESULT_CODE = "screen_result_code"
@@ -335,19 +395,23 @@ class ScreenGuideService : Service() {
 private class GuideOverlayView(context: Context) : View(context) {
     private val density = resources.displayMetrics.density
     private var target: Rect? = null
-    private var message = "Öffne Einstellungen oder Roblox; REDLINE sucht passende Optionen."
+    private var frameWidth = 0
+    private var frameHeight = 0
+    private var lastTargetAt = 0L
+    private var message = "Öffne Anzeige oder Roblox. REDLINE sucht passende Einstellungen."
 
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(255, 48, 70)
+        color = Color.rgb(255, 35, 65)
         style = Paint.Style.STROKE
-        strokeWidth = 5f * density
+        strokeWidth = 6f * density
+        setShadowLayer(8f * density, 0f, 0f, Color.rgb(255, 25, 50))
     }
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(38, 255, 48, 70)
+        color = Color.argb(48, 255, 35, 65)
         style = Paint.Style.FILL
     }
     private val bannerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(238, 18, 12, 28)
+        color = Color.argb(242, 18, 12, 28)
         style = Paint.Style.FILL
     }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -361,29 +425,62 @@ private class GuideOverlayView(context: Context) : View(context) {
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
 
-    fun updateGuide(bounds: Rect?, text: String) {
-        target = bounds
+    fun updateGuide(bounds: Rect?, text: String, sourceWidth: Int, sourceHeight: Int) {
         message = text
-        invalidate()
+        if (bounds != null) {
+            target = Rect(bounds)
+            frameWidth = sourceWidth
+            frameHeight = sourceHeight
+            lastTargetAt = SystemClock.elapsedRealtime()
+        } else if (SystemClock.elapsedRealtime() - lastTargetAt > 4500L) {
+            target = null
+        }
+        postInvalidate()
+    }
+
+    fun showStatus(text: String) {
+        message = text
+        postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val d = density
-        val banner = RectF(12f * d, 48f * d, width - 12f * d, 112f * d)
+        val bannerLeft = 12f * d
+        val bannerTop = 42f * d
+        val banner = RectF(bannerLeft, bannerTop, width - 12f * d, bannerTop + 58f * d)
         canvas.drawRoundRect(banner, 14f * d, 14f * d, bannerPaint)
-        canvas.drawText("REDLINE  •  AI SCREEN GUIDE", 24f * d, 72f * d, titlePaint)
-        val shortMessage = if (message.length > 78) message.take(75) + "..." else message
-        canvas.drawText(shortMessage, 24f * d, 94f * d, messagePaint)
+        canvas.drawText("REDLINE  •  SCREEN GUIDE", 24f * d, bannerTop + 21f * d, titlePaint)
 
-        target?.let { rect ->
-            val centerX = rect.exactCenterX()
-            val centerY = rect.exactCenterY()
-            val radius = max(rect.width(), rect.height()).coerceAtLeast((44f * d).toInt()) / 2f + 24f * d
-            val highlight = RectF(rect).apply { inset(-13f * d, -10f * d) }
-            canvas.drawRoundRect(highlight, 16f * d, 16f * d, boxPaint)
-            canvas.drawCircle(centerX, centerY, radius, ringPaint)
-            canvas.drawCircle(centerX, centerY, 5f * d, ringPaint)
+        val text = messagePaint.let { paint ->
+            val available = (width - 48f * d).coerceAtLeast(80f * d)
+            val chars = paint.breakText(message, true, available, null)
+            if (chars < message.length && chars > 3) message.take(chars - 1) + "…" else message
+        }
+        canvas.drawText(text, 24f * d, bannerTop + 43f * d, messagePaint)
+
+        val rect = target
+        if (rect != null && frameWidth > 0 && frameHeight > 0) {
+            // ML Kit coordinates are in captured-image pixels. The overlay view can
+            // have different dimensions (especially on tablets and edge-to-edge UI).
+            val scaleX = width.toFloat() / frameWidth.toFloat()
+            val scaleY = height.toFloat() / frameHeight.toFloat()
+            val mapped = RectF(
+                rect.left * scaleX,
+                rect.top * scaleY,
+                rect.right * scaleX,
+                rect.bottom * scaleY
+            )
+            mapped.inset(-18f * d, -13f * d)
+            mapped.left = mapped.left.coerceIn(4f * d, width - 4f * d)
+            mapped.right = mapped.right.coerceIn(4f * d, width - 4f * d)
+            mapped.top = mapped.top.coerceIn(4f * d, height - 4f * d)
+            mapped.bottom = mapped.bottom.coerceIn(4f * d, height - 4f * d)
+
+            // Oval follows the whole text line so the red marking stays visible
+            // even when the setting label is much wider than it is tall.
+            canvas.drawRoundRect(mapped, 20f * d, 20f * d, boxPaint)
+            canvas.drawOval(mapped, ringPaint)
         }
     }
 }
