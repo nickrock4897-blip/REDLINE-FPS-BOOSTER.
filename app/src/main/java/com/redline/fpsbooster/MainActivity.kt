@@ -216,7 +216,7 @@ class MainActivity : ComponentActivity() {
                                 } else {
                                     Text("LIVE SCREEN PREVIEW: Noch keine Freigabe aktiv.", color = Muted, fontSize = 11.sp)
                                 }
-                                Text("Kein Upload • keine Speicherung • Stop jederzeit möglich • Einstellungen werden nicht blind verändert", color = Muted, fontSize = 10.sp)
+                                Text("Kein Upload • keine Datei-Speicherung • OCR nur in Einstellungen/Device Care • Stop jederzeit möglich", color = Muted, fontSize = 10.sp)
                             }
                         }
                     }
